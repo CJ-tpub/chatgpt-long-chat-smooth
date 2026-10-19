@@ -3,8 +3,8 @@
 // @name:en      ChatGPT Long Chat Smooth
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
 // @version      0.4.1
-// @description  Reduce interaction lag in long ChatGPT conversations: typing, clicking and scrolling feel smoother with less jank.
-// @description:zh-CN 减少 ChatGPT 长对话/长会话的输入、点击和滚动交互卡顿，让操作更顺滑。
+// @description  减少 ChatGPT 长对话/长会话的输入、点击和滚动交互卡顿，让操作更顺滑。
+// @description:en Reduce interaction lag in long ChatGPT conversations: typing, clicking and scrolling feel smoother with less jank.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
 // @supportURL   https://github.com/CJ-tpub/chatgpt-long-chat-smooth/issues
 // @downloadURL  https://raw.githubusercontent.com/CJ-tpub/chatgpt-long-chat-smooth/main/chatgpt-long-chat-smooth.user.js
