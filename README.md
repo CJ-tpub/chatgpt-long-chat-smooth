@@ -57,7 +57,7 @@ ChatGPT 每次输入或点击，都会触发它自己的布局读取和样式失
 ## 兼容与限制
 
 - 正式版没有常驻面板、菜单或关闭按钮；要停用直接在 Tampermonkey 禁用脚本。
-- 只在 https://chatgpt.com/* 的长会话启用；普通短对话不会强行修改页面。
+- 只在 https://chatgpt.com/* 的对话页启用；首页或没有助手回答的页面不会修改。短对话也会为最新回答建立静态副本，但不会收起旧回答。
 - 最新回答是静态副本；如果某条内联控件依赖 React 内部状态，桥接可能失败，停用脚本并刷新即可恢复。
 - 回答正在流式生成、重新生成时，脚本会先显示原节点，稳定后再应用；生成过程中看到原始回答是预期行为。
 - ChatGPT 前端结构改版可能导致脚本无法识别；此时右下角会出现临时提示，页面保持原样。
@@ -138,7 +138,7 @@ Notes:
 ### Limits
 
 - No persistent panel, menu or close button; disable the script in Tampermonkey to stop it.
-- Only activates on long conversations on https://chatgpt.com/*.
+- Only activates on conversation pages on https://chatgpt.com/*; home and no-answer pages are untouched. Short chats still get a static twin for the latest answer, but older answers are not parked.
 - The latest answer is a static snapshot. If an inline control depends on React state, the click bridge may fail; disable the script and refresh to recover.
 - Streaming or regenerating answers temporarily show the original node; this is expected.
 - A ChatGPT frontend change may make the structure unrecognized; a temporary notice appears and the page is left untouched.
