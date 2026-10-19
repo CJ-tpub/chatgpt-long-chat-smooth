@@ -53,7 +53,7 @@ ChatGPT 每次输入或点击，都会触发它自己的布局读取和样式失
 
 1. 确保浏览器已安装 [Tampermonkey](https://www.tampermonkey.net/)。
 2. **[点击这里一键安装用户脚本](https://raw.githubusercontent.com/CJ-tpub/chatgpt-long-chat-smooth/main/chatgpt-long-chat-smooth.user.js)**；也可以在仓库里复制 chatgpt-long-chat-smooth.user.js，手动新建脚本并保存。
-   也可以从 [Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/601032-chatgpt-%E9%95%BF%E5%AF%B9%E8%AF%9D%E6%B5%81%E7%95%85%E4%BC%98%E5%8C%96)。GitHub 与 Greasy Fork 是同一个脚本的两个入口，任选其一；反馈可发到 [Greasy Fork 反馈页](https://greasyfork.org/zh-CN/scripts/601032-chatgpt-%E9%95%BF%E5%AF%B9%E8%AF%9D%E6%B5%81%E7%95%85%E4%BC%98%E5%8C%96/feedback) 或 [GitHub Issues](https://github.com/CJ-tpub/chatgpt-long-chat-smooth/issues)。
+   也可以从 [Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/601032)。GitHub 与 Greasy Fork 是同一个脚本的两个入口，任选其一；反馈可发到 [Greasy Fork 反馈页](https://greasyfork.org/zh-CN/scripts/601032/feedback) 或 [GitHub Issues](https://github.com/CJ-tpub/chatgpt-long-chat-smooth/issues)。
 3. 刷新一个 ChatGPT 网页长对话页面即可生效；脚本静默运行，没有常驻面板，也不需要配置。
 4. 要停用，在 Tampermonkey 中关闭脚本并刷新页面。
 
@@ -137,7 +137,7 @@ Notes:
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/).
 2. **[Install the userscript with one click](https://raw.githubusercontent.com/CJ-tpub/chatgpt-long-chat-smooth/main/chatgpt-long-chat-smooth.user.js)**, or copy chatgpt-long-chat-smooth.user.js into a new Tampermonkey script.
-   You can also install from [Greasy Fork](https://greasyfork.org/zh-CN/scripts/601032-chatgpt-%E9%95%BF%E5%AF%B9%E8%AF%9D%E6%B5%81%E7%95%85%E4%BC%98%E5%8C%96). GitHub and Greasy Fork are two entry points for the same script; pick one. Feedback: [Greasy Fork](https://greasyfork.org/zh-CN/scripts/601032-chatgpt-%E9%95%BF%E5%AF%B9%E8%AF%9D%E6%B5%81%E7%95%85%E4%BC%98%E5%8C%96/feedback) or [GitHub Issues](https://github.com/CJ-tpub/chatgpt-long-chat-smooth/issues).
+   You can also install from [Greasy Fork](https://greasyfork.org/zh-CN/scripts/601032). GitHub and Greasy Fork are two entry points for the same script; pick one. Feedback: [Greasy Fork](https://greasyfork.org/zh-CN/scripts/601032/feedback) or [GitHub Issues](https://github.com/CJ-tpub/chatgpt-long-chat-smooth/issues).
 3. Refresh a long ChatGPT web conversation. The script runs silently: no panel, no configuration.
 4. To stop, disable it in Tampermonkey and refresh the page.
 
