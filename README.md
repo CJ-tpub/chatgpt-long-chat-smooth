@@ -6,6 +6,8 @@
 
 *由 10 月 17 日发布的 DeepSeek V4.1 Flash-1017（deepseekv4.1flash-1017）完成优化；蓝色大肥鱼不只吃白饭了！*
 
+脚本默认启用，不再要求会话达到某个节点数；出现完整回答后，会等它稳定再应用。旧回答收起只在确实很重的多回答会话里做，避免短对话被改得面目全非。
+
 ## 它解决什么问题
 
 ChatGPT 聊得越久，页面里的回答越多，下面这些操作会越来越慢：
@@ -20,7 +22,7 @@ ChatGPT 聊得越久，页面里的回答越多，下面这些操作会越来越
 
 ChatGPT 每次输入或点击，都会触发它自己的布局读取和样式失效，让整段回答反复参与样式计算。脚本做了三件事：
 
-1. **旧回答先收起来**：把较早的助手回答在原位置收起，只留一个等高的占位；滚到附近再自动展开，位置和滚动高度不乱。
+1. **旧回答按需收起来**：只在确实很重的多回答会话中，把较早的助手回答在原位置收起，只留一个等高的占位；滚到附近再自动展开，位置和滚动高度不乱。
 2. **最新回答用静态副本**：把最新一条已完成的回答做成静态副本，原节点隐藏；副本里的块级内容只渲染看得见的部分。
 3. **减少观察器风暴**：合并页面里反复触发的文档级 MutationObserver/ResizeObserver，跳过没有语义变化的重复属性写入。
 
@@ -89,6 +91,8 @@ A default-on, no-panel Tampermonkey userscript for **long ChatGPT conversations*
 
 *Optimized with DeepSeek V4.1 Flash-1017, released on October 17. The big blue fish is no longer just eating plain rice!*
 
+The script is on by default and no longer waits for a conversation to reach a certain node count. Once a complete answer appears, it waits for the answer to stabilize before applying. Older answers are parked only in genuinely heavy multi-answer threads, so short chats are left mostly intact.
+
 ### What it fixes
 
 - **Typing and deleting lag**: noticeable delays when typing (especially with an IME) or deleting text in a long thread.
@@ -99,7 +103,7 @@ This is caused by the browser repeatedly recalculating layout across thousands o
 
 ### How it works
 
-1. **Park older answers in place**: older assistant turns are hidden with an equal-height placeholder and restored near the viewport, so page height and scroll position stay stable.
+1. **Park older answers only when needed**: in heavy multi-answer threads, older assistant turns are hidden with an equal-height placeholder and restored near the viewport, so page height and scroll position stay stable.
 2. **Use a static twin for the latest answer**: the newest completed turn is copied into a static node; the original is hidden and only visible blocks are rendered.
 3. **Calm observer storms**: document-level MutationObserver/ResizeObserver callbacks are coalesced, and same-value attribute writes are skipped.
 

@@ -2,7 +2,7 @@
 // @name         ChatGPT 长对话流畅优化
 // @name:en      ChatGPT Long Chat Smooth
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.4.0
+// @version      0.4.1
 // @description  Reduce interaction lag in long ChatGPT conversations: typing, clicking and scrolling feel smoother with less jank.
 // @description:zh-CN 减少 ChatGPT 长对话/长会话的输入、点击和滚动交互卡顿，让操作更顺滑。
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,10 +25,11 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.4.0';
+        const version = '0.4.1';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+        const testDisplayDisabled = testUiEnabled && new URLSearchParams(location.search).has('cgpt-lcl-no-display');
         const marker = 'cgpt-long-chat-lite-history';
         const heightProperty = '--cgpt-long-chat-lite-height';
         const messageSelector = '[data-chatgpt-search-unit-key], [data-testid^="conversation-turn-"]';
@@ -657,6 +658,8 @@
         let displayEnabled = false;
         let displayPausedUntil = 0;
         let displayActivationTimer = 0;
+        let displayCandidateSize = 0;
+        let displayStableChecks = 0;
         let autoRestoreParked = true;
         let displayScrollingUntil = 0;
         const displayCounters = {shield: 0, unshield: 0, park: 0, unpark: 0, refresh: 0, reattach: 0};
@@ -665,6 +668,21 @@
 
         const getAssistantTurns = () => findTurns().filter((turn) => turn.matches('[data-chatgpt-search-unit-key$=":assistant"], [data-message-author-role="assistant"]')
             || Boolean(turn.querySelector('[data-message-author-role="assistant"]')));
+
+        const hasAssistantTurns = () => isChatGptHost() && getAssistantTurns().length > 0;
+
+        // 最新回答始终使用静态副本；旧回答只在确实会拖慢页面的多回答会话里收起。
+        const shouldParkOldAnswers = () => {
+            const assistants = getAssistantTurns();
+            if (assistants.length < 2) return false;
+            const main = document.querySelector('main');
+            const twin = main?.querySelector('[data-lcl-twin]');
+            const twinNodes = twin ? twin.querySelectorAll('*').length + 1 : 0;
+            const total = main ? main.querySelectorAll('*').length - twinNodes : 0;
+            const old = assistants.slice(0, -1);
+            const largestOld = old.reduce((max, turn) => Math.max(max, turn.querySelectorAll('*').length), 0);
+            return total >= 5000 || largestOld >= 1500;
+        };
 
         /** @param {HTMLElement} turn */
         const isStreamingTurn = (turn) => turn.getAttribute('aria-busy') === 'true'
@@ -978,11 +996,11 @@
                 && scrollRoot.scrollTop + scrollRoot.clientHeight >= scrollRoot.scrollHeight - 80;
             if (isStreamingTurn(latest)) {
                 unshieldTurn();
-                if (atBottom) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
+                if (atBottom && shouldParkOldAnswers()) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
                 return;
             }
             if (!shieldState) shieldTurn(latest);
-            if (atBottom) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
+            if (atBottom && shouldParkOldAnswers()) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
             updateUi();
         };
 
@@ -1009,6 +1027,7 @@
                     }
                 }
             }
+            if (!shouldParkOldAnswers()) return;
             for (const turn of assistants) {
                 if (turn === latest || turn === shieldState?.turn || parkedTurns.has(turn)) continue;
                 const rect = turn.getBoundingClientRect();
@@ -1022,7 +1041,7 @@
                 layers.display = on;
                 saveLayerState();
             }
-            const active = on && totalEnabled && isChatGptHost();
+            const active = on && totalEnabled && isChatGptHost() && !testDisplayDisabled;
             if (!active) {
                 displayEnabled = false;
                 unshieldTurn();
@@ -1037,9 +1056,9 @@
                 updateUi();
                 return;
             }
-            if (!isHeavyThread()) {
+            if (!hasAssistantTurns()) {
                 displayEnabled = false;
-                if (status) status.textContent = '当前对话未达到轻量显示条件；不修改消息。';
+                if (status) status.textContent = '当前对话还没有可优化的助手回答；不修改消息。';
                 updateUi();
                 return;
             }
@@ -1055,11 +1074,16 @@
             updateUi();
         };
 
-        const isHeavyThread = () => {
-            if (!isChatGptHost()) return false;
-            const main = document.querySelector('main');
-            if (!main || main.querySelectorAll('*').length < 7000) return false;
-            return getAssistantTurns().length >= 2;
+        const activateDisplay = () => {
+            try {
+                setDisplayEnabled(layers.display, false);
+            } catch (error) {
+                displayEnabled = false;
+                console.warn('[ChatGPT 长对话流畅] 轻量显示初始化失败', error);
+                showFaultNotice('长对话优化初始化失败，页面结构可能已更新。可在篡改猴中停用本脚本。');
+                if (testUiEnabled && diagnosticStatus) diagnosticStatus.textContent = '轻量显示初始化失败：'
+                    + (error instanceof Error ? error.message : String(error));
+            }
         };
 
         const onDisplayScroll = () => {
@@ -1355,29 +1379,41 @@
                 setContentVisibility(layers.contentVisibility, false);
             }
             setDamper(layers.damper, false);
-            try {
-                setDisplayEnabled(layers.display, false);
-            } catch (error) {
-                displayEnabled = false;
-                console.warn('[ChatGPT 长对话流畅] 轻量显示初始化失败', error);
-                showFaultNotice('长对话优化初始化失败，页面结构可能已更新。可在篡改猴中停用本脚本。');
-                if (testUiEnabled && diagnosticStatus) diagnosticStatus.textContent = '轻量显示初始化失败：'
-                    + (error instanceof Error ? error.message : String(error));
-            }
-            // 会话内容通常晚于 DOMContentLoaded 渲染；轻量显示需要等长会话结构出现后再启用。
+            // 默认启用：不再要求长对话规模；等最新回答稳定后自动建立静态副本。
             if (!displayActivationTimer) {
                 displayActivationTimer = window.setInterval(() => {
-                    if (displayEnabled || !totalEnabled || !layers.display) return;
-                    if (isHeavyThread()) setDisplayEnabled(layers.display, false);
+                    if (displayEnabled || !totalEnabled || !layers.display || testDisplayDisabled) return;
+                    const assistants = getAssistantTurns();
+                    if (!assistants.length) {
+                        displayCandidateSize = 0;
+                        displayStableChecks = 0;
+                        return;
+                    }
+                    const latest = assistants[assistants.length - 1];
+                    if (isStreamingTurn(latest)) {
+                        displayCandidateSize = 0;
+                        displayStableChecks = 0;
+                        return;
+                    }
+                    const size = latest.querySelectorAll('*').length + (latest.textContent?.length ?? 0);
+                    if (size === displayCandidateSize) displayStableChecks += 1;
+                    else {
+                        displayCandidateSize = size;
+                        displayStableChecks = 0;
+                    }
+                    if (displayStableChecks >= 1) activateDisplay();
                 }, 1500);
             }
-            // 只有在重会话里优化层始终没有启用时才提示；正常页面不出现任何成功提示。
+            // 正常页面不出现成功提示；只有确实有回答但 12 秒仍未启用时才提示。
             window.setTimeout(() => {
-                if (!totalEnabled || !layers.display || displayEnabled) return;
-                if (isHeavyThread()) {
+                if (testDisplayDisabled || !totalEnabled || !layers.display || displayEnabled) return;
+                const assistants = getAssistantTurns();
+                if (!assistants.length) return;
+                const latest = assistants[assistants.length - 1];
+                if (!isStreamingTurn(latest)) {
                     showFaultNotice('长对话优化未生效：页面结构可能已更新。可在篡改猴中停用本脚本。');
                 }
-            }, 6000);
+            }, 12000);
             updateUi();
         };
 
@@ -1385,7 +1421,7 @@
             try {
                 startUi();
             } catch (error) {
-                console.warn('[ChatGPT 长对话流畅] 初始化失败', error);
+                console.warn('[ChatGPT 长对话轻量] 初始化失败', error);
                 showFaultNotice('长对话优化初始化失败，页面结构可能已更新。可在篡改猴中停用本脚本。');
             }
         };
