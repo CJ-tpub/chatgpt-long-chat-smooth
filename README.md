@@ -1,8 +1,10 @@
-# ChatGPT 长对话 / 长会话流畅优化（Smooth）
+# ChatGPT 网页长对话交互卡顿优化
 
 [English](#english)
 
-一个默认开启、无面板的 Tampermonkey 用户脚本，专门优化 **ChatGPT 长对话 / 长会话的交互卡顿**：解决输入迟钝、删除掉帧、菜单点击延迟和滚动卡顿。装好后不需要配置，也不会改变模型上下文或发送内容。
+一个默认开启、无面板的 Tampermonkey 用户脚本，专门优化 **ChatGPT 网页版（chatgpt.com）的长对话 / 长会话交互卡顿**：解决输入迟钝、删除掉帧、菜单点击延迟和滚动卡顿。装好后不需要配置，也不会改变模型上下文或发送内容。
+
+**这是浏览器端的 ChatGPT 网页优化**：只改善页面交互响应，不加速模型生成，也不修改对话内容；不是 API、桌面客户端或模型服务。
 
 *由 10 月 17 日发布的 DeepSeek V4.1 Flash-1017（deepseekv4.1flash-1017）完成优化；蓝色大肥鱼不只吃白饭了！*
 
@@ -52,7 +54,7 @@ ChatGPT 每次输入或点击，都会触发它自己的布局读取和样式失
 1. 确保浏览器已安装 [Tampermonkey](https://www.tampermonkey.net/)。
 2. **[点击这里一键安装用户脚本](https://raw.githubusercontent.com/CJ-tpub/chatgpt-long-chat-smooth/main/chatgpt-long-chat-smooth.user.js)**；也可以在仓库里复制 chatgpt-long-chat-smooth.user.js，手动新建脚本并保存。
    也可以从 [Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/601032-chatgpt-%E9%95%BF%E5%AF%B9%E8%AF%9D%E6%B5%81%E7%95%85%E4%BC%98%E5%8C%96)。GitHub 与 Greasy Fork 是同一个脚本的两个入口，任选其一；反馈可发到 [Greasy Fork 反馈页](https://greasyfork.org/zh-CN/scripts/601032-chatgpt-%E9%95%BF%E5%AF%B9%E8%AF%9D%E6%B5%81%E7%95%85%E4%BC%98%E5%8C%96/feedback) 或 [GitHub Issues](https://github.com/CJ-tpub/chatgpt-long-chat-smooth/issues)。
-3. 刷新一个 ChatGPT 长对话页面即可生效；脚本静默运行，没有常驻面板，也不需要配置。
+3. 刷新一个 ChatGPT 网页长对话页面即可生效；脚本静默运行，没有常驻面板，也不需要配置。
 4. 要停用，在 Tampermonkey 中关闭脚本并刷新页面。
 
 ## 兼容与限制
@@ -74,7 +76,7 @@ ChatGPT 每次输入或点击，都会触发它自己的布局读取和样式失
 <details>
 <summary>搜索关键词 / Keywords</summary>
 
-ChatGPT 长对话交互卡顿优化、ChatGPT 长会话交互卡顿优化、长对话卡顿、长会话卡顿、长对话输入延迟、长会话点击卡顿、长会话滚动卡顿、ChatGPT 流畅、长对话顺滑、长会话优化、Tampermonkey 性能脚本、userscript、ChatGPT smooth、smoother interactions、long ChatGPT conversation lag、long chat interaction performance、smoother long conversations、content-visibility。
+ChatGPT 网页长对话交互卡顿优化、ChatGPT 网页卡顿优化、ChatGPT 长对话交互卡顿优化、ChatGPT 长会话交互卡顿优化、长对话卡顿、长会话卡顿、长对话输入延迟、长会话点击卡顿、长会话滚动卡顿、ChatGPT 网页流畅、长对话顺滑、长会话优化、Tampermonkey 性能脚本、userscript、ChatGPT smooth、ChatGPT web performance、smoother interactions、long ChatGPT conversation lag、long chat interaction performance、smoother long conversations、content-visibility。
 
 </details>
 
@@ -86,9 +88,11 @@ PolyForm Noncommercial 1.0.0，见 LICENSE。允许个人和非商业使用、�
 
 ---
 
-## English
+## English: ChatGPT Web Long Chat Interaction Optimizer
 
-A default-on, no-panel Tampermonkey userscript for **long ChatGPT conversations**. It makes typing, deleting, menu clicks and scrolling feel smoother. No setup, no model or context changes.
+A default-on, no-panel Tampermonkey userscript for **long conversations on the ChatGPT web app (chatgpt.com)**. It makes typing, deleting, menu clicks and scrolling feel smoother. No setup, no model or context changes.
+
+This is a **browser-side optimization for the ChatGPT web app**: it improves interaction responsiveness only. It does not speed up model generation, change the conversation, or work with the API or a desktop client.
 
 *Optimized with DeepSeek V4.1 Flash-1017, released on October 17. The big blue fish is no longer just eating plain rice!*
 
@@ -134,7 +138,7 @@ Notes:
 1. Install [Tampermonkey](https://www.tampermonkey.net/).
 2. **[Install the userscript with one click](https://raw.githubusercontent.com/CJ-tpub/chatgpt-long-chat-smooth/main/chatgpt-long-chat-smooth.user.js)**, or copy chatgpt-long-chat-smooth.user.js into a new Tampermonkey script.
    You can also install from [Greasy Fork](https://greasyfork.org/zh-CN/scripts/601032-chatgpt-%E9%95%BF%E5%AF%B9%E8%AF%9D%E6%B5%81%E7%95%85%E4%BC%98%E5%8C%96). GitHub and Greasy Fork are two entry points for the same script; pick one. Feedback: [Greasy Fork](https://greasyfork.org/zh-CN/scripts/601032-chatgpt-%E9%95%BF%E5%AF%B9%E8%AF%9D%E6%B5%81%E7%95%85%E4%BC%98%E5%8C%96/feedback) or [GitHub Issues](https://github.com/CJ-tpub/chatgpt-long-chat-smooth/issues).
-3. Refresh a long ChatGPT conversation. The script runs silently: no panel, no configuration.
+3. Refresh a long ChatGPT web conversation. The script runs silently: no panel, no configuration.
 4. To stop, disable it in Tampermonkey and refresh the page.
 
 ### Limits

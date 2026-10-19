@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         ChatGPT 长对话流畅优化
-// @name:en      ChatGPT Long Chat Smooth
+// @name         ChatGPT 网页长对话交互卡顿优化
+// @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.4.1
-// @description  减少 ChatGPT 长对话/长会话的输入、点击和滚动交互卡顿，让操作更顺滑。
-// @description:en Reduce interaction lag in long ChatGPT conversations: typing, clicking and scrolling feel smoother with less jank.
+// @version      0.4.2
+// @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
+// @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
 // @supportURL   https://github.com/CJ-tpub/chatgpt-long-chat-smooth/issues
 // @downloadURL  https://raw.githubusercontent.com/CJ-tpub/chatgpt-long-chat-smooth/main/chatgpt-long-chat-smooth.user.js
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.4.1';
+        const version = '0.4.2';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
