@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.4.4
+// @version      0.4.5
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.4.4';
+        const version = '0.4.5';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
@@ -656,7 +656,7 @@
 
         // 轻量显示：旧回答泊车 + 最新回答静态孪生 + 块级延迟渲染。
         // 只在真实 ChatGPT 页面启用；本地普通夹具不会触发，显示层专项夹具会显式开启。
-        /** @type {{turn: HTMLElement, clone: HTMLElement, signature: number, turnHeight: number, displayValue: string, displayPriority: string} | null} */
+        /** @type {{turn: HTMLElement, clone: HTMLElement, signature: string, turnHeight: number, displayValue: string, displayPriority: string} | null} */
         let shieldState = null;
         /** @type {Map<HTMLElement, {placeholder: HTMLElement, observer: IntersectionObserver | null, displayValue: string, displayPriority: string}>} */
         const parkedTurns = new Map();
@@ -676,6 +676,9 @@
         let displayActivationTimer = 0;
         let displayCandidateSize = 0;
         let displayStableChecks = 0;
+        // 最新回答内容变化后先保持原节点可见，等待一次低频检查确认内容稳定再重新建立孪生。
+        let displayContentCandidateSignature = '';
+        let displayContentStableChecks = 0;
         let displayActivationAttempts = 0;
         let displayActivationError = '';
         let displayNextAttemptAt = 0;
@@ -707,6 +710,12 @@
         /** @param {HTMLElement} turn */
         const isStreamingTurn = (turn) => turn.getAttribute('aria-busy') === 'true'
             || Boolean(turn.querySelector('[data-result-streaming], [data-message-streaming], [data-streaming="true"], .result-streaming, .streaming'));
+
+        /** @param {HTMLElement} turn @returns {string} */
+        const getTurnSignature = (turn) => {
+            const text = turn.textContent ?? '';
+            return text.length + ':' + turn.querySelectorAll('*').length;
+        };
 
         const ensureDisplayScrollRoot = () => {
             if (displayScrollRoot?.isConnected) return displayScrollRoot;
@@ -786,7 +795,7 @@
             const displayValue = turn.style.getPropertyValue('display');
             const displayPriority = turn.style.getPropertyPriority('display');
             const turnHeight = turn.getBoundingClientRect().height;
-            const signature = turn.textContent?.length ?? 0;
+            const signature = getTurnSignature(turn);
             const clone = /** @type {HTMLElement} */ (turn.cloneNode(true));
             clone.setAttribute('data-lcl-twin', '1');
             clone.removeAttribute('data-chatgpt-search-unit-key');
@@ -844,6 +853,8 @@
                 }
             }, true);
             shieldState = {turn, clone, signature, turnHeight, displayValue, displayPriority};
+            displayContentCandidateSignature = '';
+            displayContentStableChecks = 0;
             displayCounters.shield += 1;
             updateUi();
         };
@@ -852,6 +863,8 @@
             if (!shieldState) return;
             const {turn, clone, displayValue, displayPriority} = shieldState;
             shieldState = null;
+            displayContentCandidateSignature = '';
+            displayContentStableChecks = 0;
             displayCounters.unshield += 1;
             clone.remove();
             if (turn.isConnected) {
@@ -988,7 +1001,7 @@
             if (!shieldState) return false;
             if (shieldState.turn === latest) return true;
             if (shieldState.turn.isConnected) return false;
-            const nextSignature = latest.textContent?.length ?? 0;
+            const nextSignature = getTurnSignature(latest);
             if (nextSignature !== shieldState.signature) return false;
             shieldState.turn = latest;
             shieldState.displayValue = latest.style.getPropertyValue('display');
@@ -1009,17 +1022,41 @@
             if (!assistants.length) return;
             const latest = assistants[assistants.length - 1];
             if (shieldState && shieldState.turn !== latest) {
-                if (!adoptShieldToLatest(latest)) unshieldTurn();
+                if (!adoptShieldToLatest(latest)) {
+                    unshieldTurn();
+                    displayContentCandidateSignature = getTurnSignature(latest);
+                    return;
+                }
             }
             const scrollRoot = ensureDisplayScrollRoot();
             const atBottom = scrollRoot instanceof Element
                 && scrollRoot.scrollTop + scrollRoot.clientHeight >= scrollRoot.scrollHeight - 80;
             if (isStreamingTurn(latest)) {
                 unshieldTurn();
+                displayContentCandidateSignature = '';
+                displayContentStableChecks = 0;
                 if (atBottom && shouldParkOldAnswers()) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
                 return;
             }
-            if (!shieldState) shieldTurn(latest);
+            const latestSignature = getTurnSignature(latest);
+            if (shieldState && shieldState.turn === latest && shieldState.signature !== latestSignature) {
+                // 页面可能没有设置流式标记；只要原回答签名变化，就立即撤销过期孪生，避免继续显示旧内容。
+                unshieldTurn();
+                displayContentCandidateSignature = latestSignature;
+                return;
+            }
+            if (!shieldState) {
+                if (displayContentCandidateSignature) {
+                    if (displayContentCandidateSignature !== latestSignature) {
+                        displayContentCandidateSignature = latestSignature;
+                        displayContentStableChecks = 0;
+                        return;
+                    }
+                    displayContentStableChecks += 1;
+                    if (displayContentStableChecks < 1) return;
+                }
+                shieldTurn(latest);
+            }
             if (atBottom && shouldParkOldAnswers()) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
             updateUi();
         };
@@ -1064,6 +1101,8 @@
             const active = on && totalEnabled && isChatGptHost() && !testDisplayDisabled;
             if (!active) {
                 displayEnabled = false;
+                displayContentCandidateSignature = '';
+                displayContentStableChecks = 0;
                 unshieldTurn();
                 restoreAllParked();
                 for (const turn of document.querySelectorAll('[data-lcl-manual]')) {
@@ -1111,6 +1150,8 @@
             displayObservedMain = null;
             displayScrollRoot = null;
             displayHealthMisses = 0;
+            displayContentCandidateSignature = '';
+            displayContentStableChecks = 0;
             unshieldTurn();
             restoreAllParked();
             displayEnabled = false;
@@ -1199,12 +1240,14 @@
                 displayHealthMisses = 0;
                 return;
             }
+            const latestSignature = getTurnSignature(latest);
             const observedRoot = document.querySelector('main') ?? document.body;
             const observerHealthy = Boolean(displayObserver && displayObservedMain === observedRoot
                 && displayObservedMain?.isConnected);
             const cloneHealthy = Boolean(displayEnabled && shieldState
                 && shieldState.turn === latest && shieldState.turn.isConnected
-                && shieldState.clone.isConnected && latest.dataset.lclShielded === '1');
+                && shieldState.clone.isConnected && latest.dataset.lclShielded === '1'
+                && shieldState.signature === latestSignature);
             if (observerHealthy && cloneHealthy) {
                 displayHealthMisses = 0;
                 return;

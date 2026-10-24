@@ -15,6 +15,11 @@
 - **生命周期自愈**：页面从后台恢复、ChatGPT 替换主区域、静态副本被移除时，脚本会释放旧观察器并重新建立显示层。
 - **失败退避与误报修正**：显示层初始化失败会清理状态并退避重试；只有连续多次真实失败才显示故障提示，不再把回答延迟渲染误判为页面结构变化。
 
+## 0.4.5 更新
+
+- **过期副本修复**：继续对话时，即使页面没有流式标记，也会给最新回答保存“文字长度 + 节点数”签名；内容变化时立即恢复原回答，等稳定后再重建副本，避免部分内容一直不显示、只能刷新页面。
+- **健康检查校验签名**：生命周期自愈也会检查静态副本是否过期，发现内容不一致时重新建立。
+
 ## 它解决什么问题
 
 ChatGPT 聊得越久，页面里的回答越多，下面这些操作会越来越慢：
@@ -107,6 +112,11 @@ The script is on by default and no longer waits for a conversation to reach a ce
 
 - **Lifecycle self-healing**: when the page returns from the background, ChatGPT replaces the main region, or the static twin is removed, the script releases the stale observer and rebuilds the display layer.
 - **Retry with backoff, fewer false alarms**: initialization failures now reset state and retry with backoff; the fault notice appears only after repeated real failures, not when an answer is simply still rendering.
+
+### What's new in 0.4.5
+
+- **Stale twin fix**: during continued conversation, the script now tracks a lightweight signature (text length + descendant count) even when ChatGPT sets no streaming marker. When the latest answer changes, it immediately restores the original answer and waits for it to stabilize before rebuilding the twin. This prevents partially loaded or stale answer content.
+- **Signature-aware health check**: lifecycle recovery also verifies that the static twin still matches the latest answer.
 
 ### What it fixes
 
