@@ -10,6 +10,11 @@
 
 脚本默认启用，不再要求会话达到某个节点数；出现完整回答后，会等它稳定再应用。旧回答收起只在确实很重的多回答会话里做，避免短对话被改得面目全非。
 
+## 0.4.4 更新
+
+- **生命周期自愈**：页面从后台恢复、ChatGPT 替换主区域、静态副本被移除时，脚本会释放旧观察器并重新建立显示层。
+- **失败退避与误报修正**：显示层初始化失败会清理状态并退避重试；只有连续多次真实失败才显示故障提示，不再把回答延迟渲染误判为页面结构变化。
+
 ## 它解决什么问题
 
 ChatGPT 聊得越久，页面里的回答越多，下面这些操作会越来越慢：
@@ -63,7 +68,7 @@ ChatGPT 每次输入或点击，都会触发它自己的布局读取和样式失
 - 只在 https://chatgpt.com/* 的对话页启用；首页或没有助手回答的页面不会修改。短对话也会为最新回答建立静态副本，但不会收起旧回答。
 - 最新回答是静态副本；如果某条内联控件依赖 React 内部状态，桥接可能失败，停用脚本并刷新即可恢复。
 - 回答正在流式生成、重新生成时，脚本会先显示原节点，稳定后再应用；生成过程中看到原始回答是预期行为。
-- ChatGPT 前端结构改版可能导致脚本无法识别；此时右下角会出现临时提示，页面保持原样。
+- ChatGPT 前端结构改版可能导致脚本无法识别；只有轻量显示连续初始化失败、退避重试仍未恢复时，右下角才会出现临时提示，页面保持原样。
 
 ## 隐私
 
@@ -97,6 +102,11 @@ This is a **browser-side optimization for the ChatGPT web app**: it improves int
 *Optimized with DeepSeek V4.1 Flash-1017, released on October 17. The big blue fish is no longer just eating plain rice!*
 
 The script is on by default and no longer waits for a conversation to reach a certain node count. Once a complete answer appears, it waits for the answer to stabilize before applying. Older answers are parked only in genuinely heavy multi-answer threads, so short chats are left mostly intact.
+
+### What's new in 0.4.4
+
+- **Lifecycle self-healing**: when the page returns from the background, ChatGPT replaces the main region, or the static twin is removed, the script releases the stale observer and rebuilds the display layer.
+- **Retry with backoff, fewer false alarms**: initialization failures now reset state and retry with backoff; the fault notice appears only after repeated real failures, not when an answer is simply still rendering.
 
 ### What it fixes
 
@@ -147,7 +157,7 @@ Notes:
 - Only activates on conversation pages on https://chatgpt.com/*; home and no-answer pages are untouched. Short chats still get a static twin for the latest answer, but older answers are not parked.
 - The latest answer is a static snapshot. If an inline control depends on React state, the click bridge may fail; disable the script and refresh to recover.
 - Streaming or regenerating answers temporarily show the original node; this is expected.
-- A ChatGPT frontend change may make the structure unrecognized; a temporary notice appears and the page is left untouched.
+- A ChatGPT frontend change may make the structure unrecognized; a temporary notice appears only after repeated real initialization failures and retries, and the page is left untouched.
 
 ### Privacy
 

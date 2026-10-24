@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.4.2
+// @version      0.4.4
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,11 +25,13 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.4.2';
+        const version = '0.4.4';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
-        const testDisplayDisabled = testUiEnabled && new URLSearchParams(location.search).has('cgpt-lcl-no-display');
+        const testDisplayQuery = new URLSearchParams(location.search);
+        const testDisplayDisabled = testUiEnabled && testDisplayQuery.has('cgpt-lcl-no-display');
+        const testDisplayEnabled = testUiEnabled && testDisplayQuery.has('display-test');
         const marker = 'cgpt-long-chat-lite-history';
         const heightProperty = '--cgpt-long-chat-lite-height';
         const messageSelector = '[data-chatgpt-search-unit-key], [data-testid^="conversation-turn-"]';
@@ -465,7 +467,16 @@
             if (!Object.prototype.hasOwnProperty.call(window, '__cgptLongChatLiteTest')) {
                 Object.defineProperty(window, '__cgptLongChatLiteTest', {
                     configurable: true,
-                    value: {getDamperSnapshot, showFaultNotice}
+                    value: {getDamperSnapshot, showFaultNotice, getDisplaySnapshot: () => ({
+                        enabled: displayEnabled,
+                        attempts: displayActivationAttempts,
+                        error: displayActivationError,
+                        twin: Boolean(document.querySelector('[data-lcl-twin]')),
+                        activeObserverStates: observerStates.size,
+                        healthMisses: displayHealthMisses,
+                        observedMainConnected: Boolean(displayObservedMain?.isConnected),
+                        displayObserverAttached: Boolean(displayObserver)
+                    })}
                 });
             }
         }
@@ -644,7 +655,7 @@
             + ' main [data-message-author-role="assistant"] { display:none !important; }';
 
         // 轻量显示：旧回答泊车 + 最新回答静态孪生 + 块级延迟渲染。
-        // 只在真实 ChatGPT 长会话启用；本地夹具不会触发。
+        // 只在真实 ChatGPT 页面启用；本地普通夹具不会触发，显示层专项夹具会显式开启。
         /** @type {{turn: HTMLElement, clone: HTMLElement, signature: number, turnHeight: number, displayValue: string, displayPriority: string} | null} */
         let shieldState = null;
         /** @type {Map<HTMLElement, {placeholder: HTMLElement, observer: IntersectionObserver | null, displayValue: string, displayPriority: string}>} */
@@ -653,18 +664,27 @@
         let displayScrollRoot = null;
         /** @type {MutationObserver | null} */
         let displayObserver = null;
+        /** @type {Element | null} */
+        let displayObservedMain = null;
         let displayInterval = 0;
         let displayScrollTimer = 0;
+        let displayHealthTimer = 0;
+        let displayHealthCheckTimer = 0;
+        let displayHealthMisses = 0;
         let displayEnabled = false;
         let displayPausedUntil = 0;
         let displayActivationTimer = 0;
         let displayCandidateSize = 0;
         let displayStableChecks = 0;
+        let displayActivationAttempts = 0;
+        let displayActivationError = '';
+        let displayNextAttemptAt = 0;
         let autoRestoreParked = true;
         let displayScrollingUntil = 0;
         const displayCounters = {shield: 0, unshield: 0, park: 0, unpark: 0, refresh: 0, reattach: 0};
 
-        const isChatGptHost = () => location.hostname === 'chatgpt.com' || location.hostname.endsWith('.chatgpt.com');
+        const isChatGptHost = () => location.hostname === 'chatgpt.com' || location.hostname.endsWith('.chatgpt.com')
+            || testDisplayEnabled;
 
         const getAssistantTurns = () => findTurns().filter((turn) => turn.matches('[data-chatgpt-search-unit-key$=":assistant"], [data-message-author-role="assistant"]')
             || Boolean(turn.querySelector('[data-message-author-role="assistant"]')));
@@ -1007,7 +1027,7 @@
         /** @param {number} delay */
         const scheduleDisplay = (delay) => {
             window.clearTimeout(displayScrollTimer);
-            displayScrollTimer = window.setTimeout(() => { displayScrollTimer = 0; refreshDisplay(); }, delay);
+            displayScrollTimer = window.setTimeout(() => { displayScrollTimer = 0; refreshDisplaySafely(); }, delay);
         };
 
         const maintainParking = () => {
@@ -1051,6 +1071,9 @@
                 }
                 displayObserver?.disconnect();
                 displayObserver = null;
+                displayObservedMain = null;
+                displayScrollRoot = null;
+                displayHealthMisses = 0;
                 window.clearInterval(displayInterval);
                 displayInterval = 0;
                 updateUi();
@@ -1068,22 +1091,141 @@
                 const main = document.querySelector('main') ?? document.body;
                 displayObserver = new NativeMutationObserver(() => scheduleDisplay(350));
                 displayObserver.observe(main, {childList: true, subtree: true});
+                displayObservedMain = main;
             }
-            if (!displayInterval) displayInterval = window.setInterval(refreshDisplay, 1500);
+            if (!displayInterval) displayInterval = window.setInterval(refreshDisplaySafely, 1500);
             refreshDisplay();
             updateUi();
         };
 
+        // React 切换会话或替换回答时可能短暂移除脚本创建的节点；失败时先释放旧状态，避免后续重试叠加观察器。
+        const resetDisplayRuntime = () => {
+            window.clearTimeout(displayScrollTimer);
+            displayScrollTimer = 0;
+            window.clearTimeout(displayHealthCheckTimer);
+            displayHealthCheckTimer = 0;
+            window.clearInterval(displayInterval);
+            displayInterval = 0;
+            displayObserver?.disconnect();
+            displayObserver = null;
+            displayObservedMain = null;
+            displayScrollRoot = null;
+            displayHealthMisses = 0;
+            unshieldTurn();
+            restoreAllParked();
+            displayEnabled = false;
+        };
+
+        const refreshDisplaySafely = () => {
+            try {
+                refreshDisplay();
+            } catch (error) {
+                displayActivationAttempts += 1;
+                displayActivationError = error instanceof Error ? error.message : String(error);
+                resetDisplayRuntime();
+                displayNextAttemptAt = performance.now()
+                    + Math.min(8000, 500 * (2 ** Math.min(displayActivationAttempts - 1, 4)));
+                console.warn('[ChatGPT 长对话流畅] 轻量显示刷新失败，将稍后重试', {
+                    attempt: displayActivationAttempts,
+                    error: displayActivationError
+                });
+            }
+        };
+
         const activateDisplay = () => {
+            displayActivationAttempts += 1;
             try {
                 setDisplayEnabled(layers.display, false);
+                const assistants = getAssistantTurns();
+                const latest = assistants[assistants.length - 1];
+                if (!displayEnabled) throw new Error('轻量显示未进入启用状态');
+                if (latest && !isStreamingTurn(latest) && !document.querySelector('[data-lcl-twin]')) {
+                    throw new Error('最新助手回答静态副本未建立');
+                }
+                displayActivationAttempts = 0;
+                displayActivationError = '';
+                displayNextAttemptAt = 0;
+                return true;
             } catch (error) {
-                displayEnabled = false;
-                console.warn('[ChatGPT 长对话流畅] 轻量显示初始化失败', error);
-                showFaultNotice('长对话优化初始化失败，页面结构可能已更新。可在篡改猴中停用本脚本。');
+                displayActivationError = error instanceof Error ? error.message : String(error);
+                resetDisplayRuntime();
+                displayNextAttemptAt = performance.now()
+                    + Math.min(8000, 500 * (2 ** Math.min(displayActivationAttempts - 1, 4)));
+                console.warn('[ChatGPT 长对话流畅] 轻量显示初始化失败，将稍后重试', {
+                    attempt: displayActivationAttempts,
+                    error: displayActivationError
+                });
                 if (testUiEnabled && diagnosticStatus) diagnosticStatus.textContent = '轻量显示初始化失败：'
                     + (error instanceof Error ? error.message : String(error));
+                return false;
             }
+        };
+
+        // 统一处理启动和生命周期恢复，避免多个定时器各自判断并重复克隆回答。
+        const checkDisplayActivation = () => {
+            if (displayEnabled || !totalEnabled || !layers.display || testDisplayDisabled) return;
+            if (performance.now() < displayNextAttemptAt) return;
+            const assistants = getAssistantTurns();
+            if (!assistants.length) {
+                displayCandidateSize = 0;
+                displayStableChecks = 0;
+                return;
+            }
+            const latest = assistants[assistants.length - 1];
+            if (isStreamingTurn(latest)) {
+                displayCandidateSize = 0;
+                displayStableChecks = 0;
+                return;
+            }
+            const size = latest.querySelectorAll('*').length + (latest.textContent?.length ?? 0);
+            if (size === displayCandidateSize) displayStableChecks += 1;
+            else {
+                displayCandidateSize = size;
+                displayStableChecks = 0;
+            }
+            if (displayStableChecks >= 1) activateDisplay();
+        };
+
+        // 页面从后台恢复、主区域被 React 替换或显示副本被移除时，低频校正显示层状态。
+        const reconcileDisplayHealth = () => {
+            if (testDisplayDisabled || !totalEnabled || !layers.display || !isChatGptHost()) return;
+            const assistants = getAssistantTurns();
+            if (!assistants.length) {
+                displayHealthMisses = 0;
+                return;
+            }
+            const latest = assistants[assistants.length - 1];
+            if (isStreamingTurn(latest)) {
+                displayHealthMisses = 0;
+                return;
+            }
+            const observedRoot = document.querySelector('main') ?? document.body;
+            const observerHealthy = Boolean(displayObserver && displayObservedMain === observedRoot
+                && displayObservedMain?.isConnected);
+            const cloneHealthy = Boolean(displayEnabled && shieldState
+                && shieldState.turn === latest && shieldState.turn.isConnected
+                && shieldState.clone.isConnected && latest.dataset.lclShielded === '1');
+            if (observerHealthy && cloneHealthy) {
+                displayHealthMisses = 0;
+                return;
+            }
+            displayHealthMisses += 1;
+            if (displayHealthMisses < 2) return;
+            displayHealthMisses = 0;
+            displayActivationAttempts = 0;
+            displayActivationError = '';
+            resetDisplayRuntime();
+            displayCandidateSize = 0;
+            displayStableChecks = 0;
+            checkDisplayActivation();
+        };
+
+        const scheduleDisplayHealthCheck = () => {
+            if (testDisplayDisabled || displayHealthCheckTimer) return;
+            displayHealthCheckTimer = window.setTimeout(() => {
+                displayHealthCheckTimer = 0;
+                reconcileDisplayHealth();
+            }, 400);
         };
 
         const onDisplayScroll = () => {
@@ -1381,37 +1523,25 @@
             setDamper(layers.damper, false);
             // 默认启用：不再要求长对话规模；等最新回答稳定后自动建立静态副本。
             if (!displayActivationTimer) {
-                displayActivationTimer = window.setInterval(() => {
-                    if (displayEnabled || !totalEnabled || !layers.display || testDisplayDisabled) return;
-                    const assistants = getAssistantTurns();
-                    if (!assistants.length) {
-                        displayCandidateSize = 0;
-                        displayStableChecks = 0;
-                        return;
-                    }
-                    const latest = assistants[assistants.length - 1];
-                    if (isStreamingTurn(latest)) {
-                        displayCandidateSize = 0;
-                        displayStableChecks = 0;
-                        return;
-                    }
-                    const size = latest.querySelectorAll('*').length + (latest.textContent?.length ?? 0);
-                    if (size === displayCandidateSize) displayStableChecks += 1;
-                    else {
-                        displayCandidateSize = size;
-                        displayStableChecks = 0;
-                    }
-                    if (displayStableChecks >= 1) activateDisplay();
-                }, 1500);
+                displayActivationTimer = window.setInterval(checkDisplayActivation, 1500);
             }
-            // 正常页面不出现成功提示；只有确实有回答但 12 秒仍未启用时才提示。
+            if (!displayHealthTimer) {
+                displayHealthTimer = window.setInterval(reconcileDisplayHealth, 5000);
+                window.addEventListener('pageshow', scheduleDisplayHealthCheck);
+                window.addEventListener('focus', scheduleDisplayHealthCheck);
+                window.addEventListener('resume', scheduleDisplayHealthCheck);
+                document.addEventListener('visibilitychange', scheduleDisplayHealthCheck);
+            }
+            // 正常页面不出现成功提示；只有多次捕获初始化异常且仍未启用时才提示。
             window.setTimeout(() => {
                 if (testDisplayDisabled || !totalEnabled || !layers.display || displayEnabled) return;
+                // 只有实际执行过多次初始化且捕获到异常时才提示；避免把 React 延迟渲染误报为页面结构失配。
+                if (displayActivationAttempts < 3 || !displayActivationError) return;
                 const assistants = getAssistantTurns();
                 if (!assistants.length) return;
                 const latest = assistants[assistants.length - 1];
                 if (!isStreamingTurn(latest)) {
-                    showFaultNotice('长对话优化未生效：页面结构可能已更新。可在篡改猴中停用本脚本。');
+                    showFaultNotice('长对话优化连续初始化失败：页面结构可能已更新。可在篡改猴中停用本脚本。');
                 }
             }, 12000);
             updateUi();
