@@ -22,7 +22,7 @@
 
 ## 0.4.6 更新
 
-- **内联引用控件修复**：最新回答里出现 ChatGPT 的 pressable 引用、span[role="button"]、输入框或下拉控件时，不再建立静态副本，保留原节点和 React 事件链，避免点击引用没有弹层或跳转。
+- **修复按钮控件失效**：修复脚本导致的 ChatGPT 回答中按钮控件失效问题。最新回答里出现 ChatGPT 的 pressable 引用、span[role="button"]、输入框或下拉控件时，不再建立静态副本，保留原节点和 React 事件链，避免点击引用没有弹层或跳转。
 - **普通外链不受影响**：没有上述控件的回答仍正常使用静态副本；普通 a href 外链保持完整地址。
 
 ## 它解决什么问题
@@ -126,7 +126,7 @@ The script is on by default and no longer waits for a conversation to reach a ce
 
 ### What's new in 0.4.6
 
-- **Inline citation controls fixed**: when the latest answer contains ChatGPT pressable citations, span[role="button"], inputs, textareas, or selects, the script keeps the original node instead of building a static twin, preserving React event handlers and popovers.
+- **Fixed broken button controls**: fixes button controls in ChatGPT answers that were broken by the script. When the latest answer contains ChatGPT pressable citations, span[role="button"], inputs, textareas, or selects, the script keeps the original node instead of building a static twin, preserving React event handlers and popovers.
 - **Ordinary links still work**: answers without those controls still use the static twin; normal a href links keep their full URLs.
 
 ### What it fixes
