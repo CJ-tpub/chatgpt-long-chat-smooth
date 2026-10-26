@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.4.5
+// @version      0.4.6
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.4.5';
+        const version = '0.4.6';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
@@ -717,6 +717,11 @@
             return text.length + ':' + turn.querySelectorAll('*').length;
         };
 
+        // ChatGPT 的引用实体使用 React 维护的内联 pressable；克隆后无法可靠保留其弹层状态，必须保留原节点。
+        /** @param {HTMLElement} turn @returns {boolean} */
+        const hasInlineInteractiveContent = (turn) => Boolean(turn.querySelector(
+            'span[role="button"], [data-d-component="pressable"][role="button"], [contenteditable="true"], input, textarea, select'));
+
         const ensureDisplayScrollRoot = () => {
             if (displayScrollRoot?.isConnected) return displayScrollRoot;
             const first = getAssistantTurns()[0];
@@ -788,6 +793,7 @@
         /** @param {HTMLElement} turn */
         const shieldTurn = (turn) => {
             if (!turn.isConnected) return;
+            if (hasInlineInteractiveContent(turn)) return;
             if (shieldState?.turn === turn && shieldState.clone.isConnected) return;
             unshieldTurn();
             const parent = turn.parentElement;
@@ -1038,6 +1044,15 @@
                 if (atBottom && shouldParkOldAnswers()) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
                 return;
             }
+            if (hasInlineInteractiveContent(latest)) {
+                // 内联引用、实体和输入控件依赖原节点的 React 事件与弹层状态，不能用静态副本替代。
+                unshieldTurn();
+                displayContentCandidateSignature = '';
+                displayContentStableChecks = 0;
+                if (atBottom && shouldParkOldAnswers()) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
+                updateUi();
+                return;
+            }
             const latestSignature = getTurnSignature(latest);
             if (shieldState && shieldState.turn === latest && shieldState.signature !== latestSignature) {
                 // 页面可能没有设置流式标记；只要原回答签名变化，就立即撤销过期孪生，避免继续显示旧内容。
@@ -1180,7 +1195,8 @@
                 const assistants = getAssistantTurns();
                 const latest = assistants[assistants.length - 1];
                 if (!displayEnabled) throw new Error('轻量显示未进入启用状态');
-                if (latest && !isStreamingTurn(latest) && !document.querySelector('[data-lcl-twin]')) {
+                if (latest && !isStreamingTurn(latest) && !hasInlineInteractiveContent(latest)
+                    && !document.querySelector('[data-lcl-twin]')) {
                     throw new Error('最新助手回答静态副本未建立');
                 }
                 displayActivationAttempts = 0;
@@ -1244,7 +1260,10 @@
             const observedRoot = document.querySelector('main') ?? document.body;
             const observerHealthy = Boolean(displayObserver && displayObservedMain === observedRoot
                 && displayObservedMain?.isConnected);
-            const cloneHealthy = Boolean(displayEnabled && shieldState
+            const interactiveContentHealthy = hasInlineInteractiveContent(latest)
+                && displayEnabled && latest.isConnected && !shieldState
+                && !document.querySelector('[data-lcl-twin]') && latest.dataset.lclShielded !== '1';
+            const cloneHealthy = interactiveContentHealthy || Boolean(displayEnabled && shieldState
                 && shieldState.turn === latest && shieldState.turn.isConnected
                 && shieldState.clone.isConnected && latest.dataset.lclShielded === '1'
                 && shieldState.signature === latestSignature);

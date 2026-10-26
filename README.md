@@ -20,6 +20,11 @@
 - **过期副本修复**：继续对话时，即使页面没有流式标记，也会给最新回答保存“文字长度 + 节点数”签名；内容变化时立即恢复原回答，等稳定后再重建副本，避免部分内容一直不显示、只能刷新页面。
 - **健康检查校验签名**：生命周期自愈也会检查静态副本是否过期，发现内容不一致时重新建立。
 
+## 0.4.6 更新
+
+- **内联引用控件修复**：最新回答里出现 ChatGPT 的 pressable 引用、span[role="button"]、输入框或下拉控件时，不再建立静态副本，保留原节点和 React 事件链，避免点击引用没有弹层或跳转。
+- **普通外链不受影响**：没有上述控件的回答仍正常使用静态副本；普通 a href 外链保持完整地址。
+
 ## 它解决什么问题
 
 ChatGPT 聊得越久，页面里的回答越多，下面这些操作会越来越慢：
@@ -35,7 +40,7 @@ ChatGPT 聊得越久，页面里的回答越多，下面这些操作会越来越
 ChatGPT 每次输入或点击，都会触发它自己的布局读取和样式失效，让整段回答反复参与样式计算。脚本做了三件事：
 
 1. **旧回答按需收起来**：只在确实很重的多回答会话中，把较早的助手回答在原位置收起，只留一个等高的占位；滚到附近再自动展开，位置和滚动高度不乱。
-2. **最新回答用静态副本**：把最新一条已完成的回答做成静态副本，原节点隐藏；副本里的块级内容只渲染看得见的部分。
+2. **最新回答用静态副本**：把最新一条已完成的回答做成静态副本，原节点隐藏；副本里的块级内容只渲染看得见的部分。回答里带内联引用/按钮/输入控件时保留原节点，不建立副本，以保住 React 弹层和事件。
 3. **减少观察器风暴**：合并页面里反复触发的文档级 MutationObserver/ResizeObserver，跳过没有语义变化的重复属性写入。
 
 脚本不拦截 React 事件，不改输入框，不改模型上下文，也不向外部发送数据。
@@ -72,6 +77,7 @@ ChatGPT 每次输入或点击，都会触发它自己的布局读取和样式失
 - 正式版没有常驻面板、菜单或关闭按钮；要停用直接在 Tampermonkey 禁用脚本。
 - 只在 https://chatgpt.com/* 的对话页启用；首页或没有助手回答的页面不会修改。短对话也会为最新回答建立静态副本，但不会收起旧回答。
 - 最新回答是静态副本；如果某条内联控件依赖 React 内部状态，桥接可能失败，停用脚本并刷新即可恢复。
+- 最新回答包含 ChatGPT 内联引用 pressable、span[role="button"]、输入框或下拉控件时，脚本会保留原回答、不建立静态副本；这类回答不做最新回答的静态优化，但引用弹层和 React 事件正常。
 - 回答正在流式生成、重新生成时，脚本会先显示原节点，稳定后再应用；生成过程中看到原始回答是预期行为。
 - ChatGPT 前端结构改版可能导致脚本无法识别；只有轻量显示连续初始化失败、退避重试仍未恢复时，右下角才会出现临时提示，页面保持原样。
 
@@ -118,6 +124,11 @@ The script is on by default and no longer waits for a conversation to reach a ce
 - **Stale twin fix**: during continued conversation, the script now tracks a lightweight signature (text length + descendant count) even when ChatGPT sets no streaming marker. When the latest answer changes, it immediately restores the original answer and waits for it to stabilize before rebuilding the twin. This prevents partially loaded or stale answer content.
 - **Signature-aware health check**: lifecycle recovery also verifies that the static twin still matches the latest answer.
 
+### What's new in 0.4.6
+
+- **Inline citation controls fixed**: when the latest answer contains ChatGPT pressable citations, span[role="button"], inputs, textareas, or selects, the script keeps the original node instead of building a static twin, preserving React event handlers and popovers.
+- **Ordinary links still work**: answers without those controls still use the static twin; normal a href links keep their full URLs.
+
 ### What it fixes
 
 - **Typing and deleting lag**: noticeable delays when typing (especially with an IME) or deleting text in a long thread.
@@ -129,7 +140,7 @@ This is caused by the browser repeatedly recalculating layout across thousands o
 ### How it works
 
 1. **Park older answers only when needed**: in heavy multi-answer threads, older assistant turns are hidden with an equal-height placeholder and restored near the viewport, so page height and scroll position stay stable.
-2. **Use a static twin for the latest answer**: the newest completed turn is copied into a static node; the original is hidden and only visible blocks are rendered.
+2. **Use a static twin for the latest answer**: the newest completed turn is copied into a static node; the original is hidden and only visible blocks are rendered. If the answer contains inline citations, buttons, or input controls, the original node is kept instead, preserving React popovers and handlers.
 3. **Calm observer storms**: document-level MutationObserver/ResizeObserver callbacks are coalesced, and same-value attribute writes are skipped.
 
 It does not intercept React events, change the composer, alter model context, or send data anywhere.
@@ -166,6 +177,7 @@ Notes:
 - No persistent panel, menu or close button; disable the script in Tampermonkey to stop it.
 - Only activates on conversation pages on https://chatgpt.com/*; home and no-answer pages are untouched. Short chats still get a static twin for the latest answer, but older answers are not parked.
 - The latest answer is a static snapshot. If an inline control depends on React state, the click bridge may fail; disable the script and refresh to recover.
+- When the latest answer contains ChatGPT inline citation pressables, span[role="button"], inputs, textareas, or selects, the script keeps the original answer and does not build a twin. Those answers do not get the latest-answer static optimization, but citation popovers and React handlers keep working.
 - Streaming or regenerating answers temporarily show the original node; this is expected.
 - A ChatGPT frontend change may make the structure unrecognized; a temporary notice appears only after repeated real initialization failures and retries, and the page is left untouched.
 
