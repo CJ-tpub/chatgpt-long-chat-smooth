@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.5.0
+// @version      0.6.0
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.5.0';
+        const version = '0.6.0';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
@@ -476,7 +476,7 @@
                         healthMisses: displayHealthMisses,
                         observedMainConnected: Boolean(displayObservedMain?.isConnected),
                         displayObserverAttached: Boolean(displayObserver)
-                    })}
+                    }), maintainParking: () => maintainParking()}
                 });
             }
         }
@@ -688,6 +688,14 @@
         let contentCheckTimer = 0;
         /** @type {MutationObserver | null} */
         let growthObserver = null;
+        // 交互回答专注模式：在回答内的输入框里打字时，把其它回答临时收起（等高占位）并隐藏静态孪生，
+        // 让页面每次按键的样式重算只覆盖正在编辑的这一条。
+        /** @type {HTMLElement | null} */
+        let focusModeTurn = null;
+        /** @type {{turn: HTMLElement, placeholder: HTMLElement, displayValue: string, displayPriority: string}[]} */
+        let focusParked = [];
+        let focusTwinHidden = false;
+        let focusRestoreTimer = 0;
         // 输入期间让路：按键/合成输入后 300 ms 内跳过周期刷新，避免和用户输入抢主线程。
         let inputBusyUntil = 0;
         for (const type of ['keydown', 'input', 'compositionstart', 'compositionupdate']) {
@@ -695,7 +703,7 @@
                 inputBusyUntil = performance.now() + 300;
             }, {capture: true, passive: true});
         }
-        const displayCounters = {shield: 0, unshield: 0, park: 0, unpark: 0, refresh: 0, reattach: 0, contentUnshield: 0};
+        const displayCounters = {shield: 0, unshield: 0, park: 0, unpark: 0, refresh: 0, reattach: 0, contentUnshield: 0, focusEnter: 0, focusExit: 0};
 
         const isChatGptHost = () => location.hostname === 'chatgpt.com' || location.hostname.endsWith('.chatgpt.com')
             || testDisplayEnabled;
@@ -1020,6 +1028,82 @@
             }
         };
 
+        /** @param {Element | null} element @returns {boolean} */
+        const isEditableElement = (element) => element instanceof HTMLElement
+            && Boolean(element.closest('input, textarea, select, [contenteditable="true"]'));
+
+        // 只有「位于某条助手回答内部」的可编辑元素才算正在编辑回答；主输入框不算。
+        /** @param {Element | null} element @returns {HTMLElement | null} */
+        const focusTurnOf = (element) => {
+            if (!isEditableElement(element)) return null;
+            const turn = /** @type {HTMLElement} */ (element).closest(messageSelector);
+            return turn instanceof HTMLElement ? turn : null;
+        };
+
+        const exitFocusMode = () => {
+            window.clearTimeout(focusRestoreTimer);
+            focusRestoreTimer = 0;
+            if (!focusModeTurn && !focusParked.length && !focusTwinHidden) return;
+            for (const entry of focusParked) {
+                entry.placeholder.remove();
+                if (entry.turn.isConnected) {
+                    if (entry.displayValue) entry.turn.style.setProperty('display', entry.displayValue, entry.displayPriority);
+                    else entry.turn.style.removeProperty('display');
+                }
+            }
+            focusParked = [];
+            if (focusTwinHidden && shieldState?.clone.isConnected) shieldState.clone.style.removeProperty('display');
+            focusTwinHidden = false;
+            focusModeTurn = null;
+            displayCounters.focusExit += 1;
+            updateUi();
+        };
+
+        /** @param {HTMLElement} turn */
+        const enterFocusMode = (turn) => {
+            if (!displayEnabled || !totalEnabled || !layers.display) return;
+            if (focusModeTurn === turn) return;
+            if (focusModeTurn) exitFocusMode();
+            focusModeTurn = turn;
+            displayCounters.focusEnter += 1;
+            const scrollRoot = ensureDisplayScrollRoot();
+            const scrollTop = scrollRoot instanceof Element ? scrollRoot.scrollTop : null;
+            for (const other of getAssistantTurns()) {
+                if (other === turn || other === shieldState?.turn || parkedTurns.has(other)) continue;
+                if (!other.isConnected || other.dataset.lclManual === '1') continue;
+                const rect = other.getBoundingClientRect();
+                if (rect.height < 40) continue;
+                const placeholder = document.createElement('div');
+                placeholder.className = 'cgpt-lcl-focus-parked';
+                placeholder.style.cssText = 'height:' + rect.height.toFixed(2) + 'px;';
+                other.parentElement?.insertBefore(placeholder, other);
+                focusParked.push({
+                    turn: other,
+                    placeholder,
+                    displayValue: other.style.getPropertyValue('display'),
+                    displayPriority: other.style.getPropertyPriority('display')
+                });
+                other.style.setProperty('display', 'none', 'important');
+            }
+            if (shieldState?.clone.isConnected && !shieldState.clone.dataset.lclFocusHidden) {
+                shieldState.clone.dataset.lclFocusHidden = '1';
+                shieldState.clone.style.setProperty('display', 'none', 'important');
+                focusTwinHidden = true;
+            }
+            if (scrollRoot instanceof Element && scrollTop !== null) scrollRoot.scrollTop = scrollTop;
+            updateUi();
+        };
+
+        const scheduleFocusExit = () => {
+            if (!focusModeTurn) return;
+            window.clearTimeout(focusRestoreTimer);
+            focusRestoreTimer = window.setTimeout(() => {
+                focusRestoreTimer = 0;
+                if (focusTurnOf(document.activeElement)) return;
+                exitFocusMode();
+            }, 600);
+        };
+
         const restoreAllParked = () => {
             for (const turn of Array.from(parkedTurns.keys())) unparkTurn(turn);
         };
@@ -1166,6 +1250,7 @@
             const active = on && totalEnabled && isChatGptHost() && !testDisplayDisabled;
             if (!active) {
                 displayEnabled = false;
+                exitFocusMode();
                 unshieldTurn();
                 restoreAllParked();
                 for (const turn of document.querySelectorAll('[data-lcl-manual]')) {
@@ -1213,6 +1298,7 @@
             displayObservedMain = null;
             displayScrollRoot = null;
             displayHealthMisses = 0;
+            exitFocusMode();
             unshieldTurn();
             restoreAllParked();
             displayEnabled = false;
@@ -1302,6 +1388,9 @@
                 displayHealthMisses = 0;
                 return;
             }
+            if (focusModeTurn && (!focusModeTurn.isConnected || focusTurnOf(document.activeElement) !== focusModeTurn)) {
+                exitFocusMode();
+            }
             const observedRoot = document.querySelector('main') ?? document.body;
             const observerHealthy = Boolean(displayObserver && displayObservedMain === observedRoot
                 && displayObservedMain?.isConnected);
@@ -1353,6 +1442,21 @@
             window.clearTimeout(displayScrollTimer);
             displayScrollTimer = window.setTimeout(() => { displayScrollTimer = 0; maintainParking(); }, 350);
         };
+        document.addEventListener('focusin', (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLElement)) return;
+            if (!isEditableElement(target)) return;
+            const turn = target.closest(messageSelector);
+            if (!(turn instanceof HTMLElement)) return;
+            if (!displayEnabled || !totalEnabled || !layers.display || testDisplayDisabled) return;
+            window.clearTimeout(focusRestoreTimer);
+            focusRestoreTimer = 0;
+            enterFocusMode(turn);
+        }, true);
+        document.addEventListener('focusout', () => {
+            scheduleFocusExit();
+        }, true);
+
         window.addEventListener('scroll', onDisplayScroll, {capture: true, passive: true});
 
         const startUi = () => {

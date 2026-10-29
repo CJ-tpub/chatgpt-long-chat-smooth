@@ -25,6 +25,17 @@
 - **修复按钮控件失效**：修复脚本导致的 ChatGPT 回答中按钮控件失效问题。最新回答里出现 ChatGPT 的 pressable 引用、span[role="button"]、输入框或下拉控件时，不再建立静态副本，保留原节点和 React 事件链，避免点击引用没有弹层或跳转。
 - **普通外链不受影响**：没有上述控件的回答仍正常使用静态副本；普通 a href 外链保持完整地址。
 
+## 0.6.0 更新：会话内输入交互组件的针对性优化
+
+ChatGPT 的交互式回答（例如 20 题测验，第 15 题起是文本框）里快速连打时，页面每次按键都会做一次**全量样式重算**
+（CDP 实测 ≈100 ms/键，布局与 JS 可忽略）。0.6.0 增加「交互回答专注模式」：
+
+- 焦点进入某条回答里的输入框时，把**其它助手回答**用等高占位临时收起、并隐藏最新回答的静态副本；
+- 这样每次按键的样式重算只覆盖正在编辑的那一条：**输入 p95 从 120 ms 降到 32 ms，每次按键重算 ≈24 ms**；
+- 失焦 600 ms 后精确还原；主输入框不受影响（仍为 16 ms）。
+
+已知取舍：编辑期间其它回答显示为等高占位（与「旧回答收起」外观一致），失焦即恢复。
+
 ## 0.5.0 更新
 
 - **收回两处负优化**：0.4.5 的「文字长度 + 节点数」精确签名会让静态副本反复重建（页面隐藏回答后会做一次懒渲染收缩，签名因此抖动；实测单场景长任务最长 9.7 秒）；0.4.6 的 pressable 保护会让几乎每条带引用角标的最新回答都不再建立副本。0.5.0 只在两种情况下撤销或跳过副本：内容确实比副本更长，或回答里真的有输入框/下拉框。
@@ -135,6 +146,16 @@ The script is on by default and no longer waits for a conversation to reach a ce
 
 - **Fixed broken button controls**: fixes button controls in ChatGPT answers that were broken by the script. When the latest answer contains ChatGPT pressable citations, span[role="button"], inputs, textareas, or selects, the script keeps the original node instead of building a static twin, preserving React event handlers and popovers.
 - **Ordinary links still work**: answers without those controls still use the static twin; normal a href links keep their full URLs.
+
+### What's new in 0.6.0
+
+A targeted fix for ChatGPT's interactive answer components inside a conversation (for example a 20-question quiz whose Q15+ fields are textareas) do a **full style recalculation** on every keystroke (measured ≈100 ms/key via CDP; layout and JS are negligible). 0.6.0 adds an "interactive answer focus mode":
+
+- when focus enters an editable field inside an answer, every **other** assistant answer is temporarily collapsed into an equal-height placeholder and the latest answer's static twin is hidden;
+- the per-keystroke style recalculation then covers only the answer being edited: **input p95 drops from 120 ms to 32 ms (recalc ≈24 ms/key)**;
+- everything is restored 600 ms after focus leaves; the main composer is unaffected (still 16 ms).
+
+Trade-off: while editing, other answers appear as equal-height placeholders (same look as the existing parked answers) and come back on blur.
 
 ### What's new in 0.5.0
 
