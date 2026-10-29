@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.4.6
+// @version      0.5.0
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.4.6';
+        const version = '0.5.0';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
@@ -656,7 +656,7 @@
 
         // 轻量显示：旧回答泊车 + 最新回答静态孪生 + 块级延迟渲染。
         // 只在真实 ChatGPT 页面启用；本地普通夹具不会触发，显示层专项夹具会显式开启。
-        /** @type {{turn: HTMLElement, clone: HTMLElement, signature: string, turnHeight: number, displayValue: string, displayPriority: string} | null} */
+        /** @type {{turn: HTMLElement, clone: HTMLElement, signature: number, turnHeight: number, displayValue: string, displayPriority: string} | null} */
         let shieldState = null;
         /** @type {Map<HTMLElement, {placeholder: HTMLElement, observer: IntersectionObserver | null, displayValue: string, displayPriority: string}>} */
         const parkedTurns = new Map();
@@ -676,15 +676,26 @@
         let displayActivationTimer = 0;
         let displayCandidateSize = 0;
         let displayStableChecks = 0;
-        // 最新回答内容变化后先保持原节点可见，等待一次低频检查确认内容稳定再重新建立孪生。
-        let displayContentCandidateSignature = '';
-        let displayContentStableChecks = 0;
         let displayActivationAttempts = 0;
         let displayActivationError = '';
         let displayNextAttemptAt = 0;
         let autoRestoreParked = true;
         let displayScrollingUntil = 0;
-        const displayCounters = {shield: 0, unshield: 0, park: 0, unpark: 0, refresh: 0, reattach: 0};
+        // 内容增长检测：只在原回答真的比孪生更长时撤销孪生。
+        // 页面在回答被隐藏后会做一次懒渲染收缩，长度会短暂变小；只比较「超过建孪生时的长度」可避免自激循环。
+        let shieldContentLength = 0;
+        let shieldAllowedAt = 0;
+        let contentCheckTimer = 0;
+        /** @type {MutationObserver | null} */
+        let growthObserver = null;
+        // 输入期间让路：按键/合成输入后 300 ms 内跳过周期刷新，避免和用户输入抢主线程。
+        let inputBusyUntil = 0;
+        for (const type of ['keydown', 'input', 'compositionstart', 'compositionupdate']) {
+            document.addEventListener(type, () => {
+                inputBusyUntil = performance.now() + 300;
+            }, {capture: true, passive: true});
+        }
+        const displayCounters = {shield: 0, unshield: 0, park: 0, unpark: 0, refresh: 0, reattach: 0, contentUnshield: 0};
 
         const isChatGptHost = () => location.hostname === 'chatgpt.com' || location.hostname.endsWith('.chatgpt.com')
             || testDisplayEnabled;
@@ -694,33 +705,38 @@
 
         const hasAssistantTurns = () => isChatGptHost() && getAssistantTurns().length > 0;
 
+        // 只有真正的输入控件才不能用静态副本（复制后无法输入）。
+        // 引用角标 span[role=button] 不属于这一类：点击时会先恢复原节点再转发，弹层位置正确。
+        /** @param {HTMLElement} turn @returns {boolean} */
+        const hasStatefulInputs = (turn) => Boolean(turn.querySelector(
+            'input, textarea, select, [contenteditable="true"]'));
+
+        // 停车阈值要判断整条会话的规模；全树计数是 16k 级数组，不能每次刷新或定时重算。
+        // 只在「回答数量变化」时重算一次：新回答到达才可能改变会话规模。
+        let threadSizeCache = 0;
+        let threadSizeTurns = -1;
+        const getThreadSize = () => {
+            const assistants = getAssistantTurns();
+            if (assistants.length === threadSizeTurns) return threadSizeCache;
+            const main = document.querySelector('main');
+            const twin = main?.querySelector('[data-lcl-twin]');
+            const twinNodes = twin ? twin.querySelectorAll('*').length + 1 : 0;
+            threadSizeCache = main ? main.querySelectorAll('*').length - twinNodes : 0;
+            threadSizeTurns = assistants.length;
+            return threadSizeCache;
+        };
+
         // 最新回答始终使用静态副本；旧回答只在确实会拖慢页面的多回答会话里收起。
         const shouldParkOldAnswers = () => {
             const assistants = getAssistantTurns();
             if (assistants.length < 2) return false;
-            const main = document.querySelector('main');
-            const twin = main?.querySelector('[data-lcl-twin]');
-            const twinNodes = twin ? twin.querySelectorAll('*').length + 1 : 0;
-            const total = main ? main.querySelectorAll('*').length - twinNodes : 0;
-            const old = assistants.slice(0, -1);
-            const largestOld = old.reduce((max, turn) => Math.max(max, turn.querySelectorAll('*').length), 0);
-            return total >= 5000 || largestOld >= 1500;
+            if (getThreadSize() >= 5000) return true;
+            return assistants.slice(0, -1).some((turn) => turn.querySelectorAll('*').length >= 1500);
         };
 
         /** @param {HTMLElement} turn */
         const isStreamingTurn = (turn) => turn.getAttribute('aria-busy') === 'true'
             || Boolean(turn.querySelector('[data-result-streaming], [data-message-streaming], [data-streaming="true"], .result-streaming, .streaming'));
-
-        /** @param {HTMLElement} turn @returns {string} */
-        const getTurnSignature = (turn) => {
-            const text = turn.textContent ?? '';
-            return text.length + ':' + turn.querySelectorAll('*').length;
-        };
-
-        // ChatGPT 的引用实体使用 React 维护的内联 pressable；克隆后无法可靠保留其弹层状态，必须保留原节点。
-        /** @param {HTMLElement} turn @returns {boolean} */
-        const hasInlineInteractiveContent = (turn) => Boolean(turn.querySelector(
-            'span[role="button"], [data-d-component="pressable"][role="button"], [contenteditable="true"], input, textarea, select'));
 
         const ensureDisplayScrollRoot = () => {
             if (displayScrollRoot?.isConnected) return displayScrollRoot;
@@ -790,10 +806,41 @@
             return count;
         };
 
+        // 页面在回答被隐藏后会做一次懒渲染收缩（节点数上下浮动百余），所以只在
+        // 「原回答文本比建孪生时更长」时才撤销孪生，避免隐藏/恢复自激循环。
+        const checkContentGrowth = () => {
+            contentCheckTimer = 0;
+            if (!shieldState) return;
+            const length = (shieldState.turn.textContent ?? '').length;
+            if (length <= shieldContentLength) return;
+            unshieldTurn();
+            shieldAllowedAt = performance.now() + 2000;
+            displayCounters.contentUnshield += 1;
+        };
+
+        /** @param {HTMLElement} turn */
+        const watchContentGrowth = (turn) => {
+            unwatchContentGrowth();
+            growthObserver = new NativeMutationObserver(() => {
+                if (contentCheckTimer) return;
+                contentCheckTimer = window.setTimeout(checkContentGrowth, 120);
+            });
+            // 只观察节点增删：流式追加与页面重渲染都会新增节点，不必额外监听字符数据。
+            growthObserver.observe(turn, {childList: true, subtree: true});
+        };
+
+        const unwatchContentGrowth = () => {
+            growthObserver?.disconnect();
+            growthObserver = null;
+            if (contentCheckTimer) {
+                window.clearTimeout(contentCheckTimer);
+                contentCheckTimer = 0;
+            }
+        };
+
         /** @param {HTMLElement} turn */
         const shieldTurn = (turn) => {
             if (!turn.isConnected) return;
-            if (hasInlineInteractiveContent(turn)) return;
             if (shieldState?.turn === turn && shieldState.clone.isConnected) return;
             unshieldTurn();
             const parent = turn.parentElement;
@@ -801,7 +848,9 @@
             const displayValue = turn.style.getPropertyValue('display');
             const displayPriority = turn.style.getPropertyPriority('display');
             const turnHeight = turn.getBoundingClientRect().height;
-            const signature = getTurnSignature(turn);
+            const signature = turn.textContent?.length ?? 0;
+            shieldContentLength = signature;
+            watchContentGrowth(turn);
             const clone = /** @type {HTMLElement} */ (turn.cloneNode(true));
             clone.setAttribute('data-lcl-twin', '1');
             clone.removeAttribute('data-chatgpt-search-unit-key');
@@ -855,12 +904,14 @@
                 if (original instanceof HTMLElement) {
                     event.preventDefault();
                     event.stopPropagation();
+                    // 引用弹层、浮层依赖原节点真实布局位置：先恢复原节点，再转发这次点击。
+                    // 之后一段时间不再重建孪生，避免弹层刚打开就被隐藏。
+                    shieldAllowedAt = performance.now() + 10000;
+                    unshieldTurn();
                     original.click();
                 }
             }, true);
             shieldState = {turn, clone, signature, turnHeight, displayValue, displayPriority};
-            displayContentCandidateSignature = '';
-            displayContentStableChecks = 0;
             displayCounters.shield += 1;
             updateUi();
         };
@@ -869,8 +920,7 @@
             if (!shieldState) return;
             const {turn, clone, displayValue, displayPriority} = shieldState;
             shieldState = null;
-            displayContentCandidateSignature = '';
-            displayContentStableChecks = 0;
+            unwatchContentGrowth();
             displayCounters.unshield += 1;
             clone.remove();
             if (turn.isConnected) {
@@ -885,6 +935,8 @@
         const parkTurn = (turn) => {
             if (parkedTurns.has(turn) || !turn.isConnected || turn === shieldState?.turn || turn.dataset.lclManual === '1' || isStreamingTurn(turn)) return;
             if (turn.querySelector('[contenteditable="true"]')) return;
+            // 刚被自动恢复的回答先保持可见，避免与恢复逻辑互相拉扯。
+            if (Number(turn.dataset.lclUnparkedAt || 0) + 3000 > performance.now()) return;
             const rect = turn.getBoundingClientRect();
             if (rect.height < 40) return;
             const parent = turn.parentElement;
@@ -927,7 +979,7 @@
             if (autoRestoreParked && typeof IntersectionObserver === 'function') {
                 observer = new IntersectionObserver((entries) => {
                     if (entries.some((entry) => entry.isIntersecting)) unparkTurn(turn);
-                }, {root: scrollRoot instanceof Element ? scrollRoot : null, rootMargin: '250% 0px'});
+                }, {root: scrollRoot instanceof Element ? scrollRoot : null, rootMargin: '25% 0px'});
                 observer.observe(placeholder);
             }
             parkedTurns.set(turn, {placeholder, observer, displayValue, displayPriority});
@@ -939,6 +991,7 @@
         const unparkTurn = (turn) => {
             const entry = parkedTurns.get(turn);
             if (!entry) return;
+            turn.dataset.lclUnparkedAt = String(Math.round(performance.now()));
             parkedTurns.delete(turn);
             delete turn.dataset.lclParked;
             entry.observer?.disconnect();
@@ -949,6 +1002,22 @@
             }
             displayCounters.unpark += 1;
             updateUi();
+        };
+
+        // 停车规则与 v0.3.3 一致：在底部时，完全离开视口上方的旧回答都停车；
+        // 不在底部时留 1.5 个视口余量。恢复由观察器负责（只在占位接近视口时恢复），
+        // 加上"恢复后 3 秒内不再停车"的守卫，避免停车/恢复互相拉扯。
+        /** @param {HTMLElement[]} assistants @param {HTMLElement} latest */
+        const parkFarAnswers = (assistants, latest) => {
+            const scrollRoot = ensureDisplayScrollRoot();
+            if (!(scrollRoot instanceof Element)) return;
+            const rootTop = scrollRoot.getBoundingClientRect().top;
+            const atBottom = scrollRoot.scrollTop + scrollRoot.clientHeight >= scrollRoot.scrollHeight - 80;
+            const margin = atBottom ? 0 : Math.max(400, scrollRoot.clientHeight * 1.5);
+            for (const turn of assistants) {
+                if (turn === latest) continue;
+                if (turn.getBoundingClientRect().bottom < rootTop - margin) parkTurn(turn);
+            }
         };
 
         const restoreAllParked = () => {
@@ -1007,11 +1076,13 @@
             if (!shieldState) return false;
             if (shieldState.turn === latest) return true;
             if (shieldState.turn.isConnected) return false;
-            const nextSignature = getTurnSignature(latest);
+            const nextSignature = latest.textContent?.length ?? 0;
             if (nextSignature !== shieldState.signature) return false;
             shieldState.turn = latest;
             shieldState.displayValue = latest.style.getPropertyValue('display');
             shieldState.displayPriority = latest.style.getPropertyPriority('display');
+            shieldContentLength = nextSignature;
+            watchContentGrowth(latest);
             latest.dataset.lclShielded = '1';
             latest.style.setProperty('display', 'none', 'important');
             latest.after(shieldState.clone);
@@ -1029,9 +1100,9 @@
             const latest = assistants[assistants.length - 1];
             if (shieldState && shieldState.turn !== latest) {
                 if (!adoptShieldToLatest(latest)) {
+                    // React 替换了最新回答节点：立刻重建孪生，不要留下 1.5～3 秒的无优化窗口。
                     unshieldTurn();
-                    displayContentCandidateSignature = getTurnSignature(latest);
-                    return;
+                    if (performance.now() >= shieldAllowedAt) shieldTurn(latest);
                 }
             }
             const scrollRoot = ensureDisplayScrollRoot();
@@ -1039,40 +1110,18 @@
                 && scrollRoot.scrollTop + scrollRoot.clientHeight >= scrollRoot.scrollHeight - 80;
             if (isStreamingTurn(latest)) {
                 unshieldTurn();
-                displayContentCandidateSignature = '';
-                displayContentStableChecks = 0;
-                if (atBottom && shouldParkOldAnswers()) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
+                if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
                 return;
             }
-            if (hasInlineInteractiveContent(latest)) {
-                // 内联引用、实体和输入控件依赖原节点的 React 事件与弹层状态，不能用静态副本替代。
+            if (hasStatefulInputs(latest)) {
+                // 回答内部有可输入的控件：保留原节点，不能克隆。
                 unshieldTurn();
-                displayContentCandidateSignature = '';
-                displayContentStableChecks = 0;
-                if (atBottom && shouldParkOldAnswers()) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
+                if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
                 updateUi();
                 return;
             }
-            const latestSignature = getTurnSignature(latest);
-            if (shieldState && shieldState.turn === latest && shieldState.signature !== latestSignature) {
-                // 页面可能没有设置流式标记；只要原回答签名变化，就立即撤销过期孪生，避免继续显示旧内容。
-                unshieldTurn();
-                displayContentCandidateSignature = latestSignature;
-                return;
-            }
-            if (!shieldState) {
-                if (displayContentCandidateSignature) {
-                    if (displayContentCandidateSignature !== latestSignature) {
-                        displayContentCandidateSignature = latestSignature;
-                        displayContentStableChecks = 0;
-                        return;
-                    }
-                    displayContentStableChecks += 1;
-                    if (displayContentStableChecks < 1) return;
-                }
-                shieldTurn(latest);
-            }
-            if (atBottom && shouldParkOldAnswers()) for (const turn of assistants) if (turn !== latest) parkTurn(turn);
+            if (!shieldState && performance.now() >= shieldAllowedAt) shieldTurn(latest);
+            if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
             updateUi();
         };
 
@@ -1089,7 +1138,6 @@
             if (!(scrollRoot instanceof Element)) return;
             const assistants = getAssistantTurns();
             const latest = assistants[assistants.length - 1];
-            const atBottom = scrollRoot.scrollTop + scrollRoot.clientHeight >= scrollRoot.scrollHeight - 40;
             const rootRect = scrollRoot.getBoundingClientRect();
             if (autoRestoreParked) {
                 for (const [turn, entry] of Array.from(parkedTurns.entries())) {
@@ -1100,10 +1148,12 @@
                 }
             }
             if (!shouldParkOldAnswers()) return;
+            const atBottom = scrollRoot.scrollTop + scrollRoot.clientHeight >= scrollRoot.scrollHeight - 80;
+            const margin = atBottom ? 0 : Math.max(400, scrollRoot.clientHeight * 1.5);
             for (const turn of assistants) {
                 if (turn === latest || turn === shieldState?.turn || parkedTurns.has(turn)) continue;
                 const rect = turn.getBoundingClientRect();
-                if (rect.bottom < -scrollRoot.clientHeight * 1.5 || (atBottom && rect.bottom < 0)) parkTurn(turn);
+                if (rect.bottom < rootRect.top - margin || rect.top > rootRect.bottom + margin) parkTurn(turn);
             }
         };
 
@@ -1116,8 +1166,6 @@
             const active = on && totalEnabled && isChatGptHost() && !testDisplayDisabled;
             if (!active) {
                 displayEnabled = false;
-                displayContentCandidateSignature = '';
-                displayContentStableChecks = 0;
                 unshieldTurn();
                 restoreAllParked();
                 for (const turn of document.querySelectorAll('[data-lcl-manual]')) {
@@ -1165,14 +1213,13 @@
             displayObservedMain = null;
             displayScrollRoot = null;
             displayHealthMisses = 0;
-            displayContentCandidateSignature = '';
-            displayContentStableChecks = 0;
             unshieldTurn();
             restoreAllParked();
             displayEnabled = false;
         };
 
         const refreshDisplaySafely = () => {
+            if (displayEnabled && performance.now() < inputBusyUntil) return;
             try {
                 refreshDisplay();
             } catch (error) {
@@ -1195,8 +1242,7 @@
                 const assistants = getAssistantTurns();
                 const latest = assistants[assistants.length - 1];
                 if (!displayEnabled) throw new Error('轻量显示未进入启用状态');
-                if (latest && !isStreamingTurn(latest) && !hasInlineInteractiveContent(latest)
-                    && !document.querySelector('[data-lcl-twin]')) {
+                if (latest && !isStreamingTurn(latest) && !document.querySelector('[data-lcl-twin]')) {
                     throw new Error('最新助手回答静态副本未建立');
                 }
                 displayActivationAttempts = 0;
@@ -1256,18 +1302,15 @@
                 displayHealthMisses = 0;
                 return;
             }
-            const latestSignature = getTurnSignature(latest);
             const observedRoot = document.querySelector('main') ?? document.body;
             const observerHealthy = Boolean(displayObserver && displayObservedMain === observedRoot
                 && displayObservedMain?.isConnected);
-            const interactiveContentHealthy = hasInlineInteractiveContent(latest)
-                && displayEnabled && latest.isConnected && !shieldState
-                && !document.querySelector('[data-lcl-twin]') && latest.dataset.lclShielded !== '1';
-            const cloneHealthy = interactiveContentHealthy || Boolean(displayEnabled && shieldState
+            const stateful = hasStatefulInputs(latest);
+            const cloneHealthy = Boolean(displayEnabled && shieldState
                 && shieldState.turn === latest && shieldState.turn.isConnected
-                && shieldState.clone.isConnected && latest.dataset.lclShielded === '1'
-                && shieldState.signature === latestSignature);
-            if (observerHealthy && cloneHealthy) {
+                && shieldState.clone.isConnected && latest.dataset.lclShielded === '1');
+            const interactiveHealthy = Boolean(displayEnabled && stateful && !shieldState);
+            if (observerHealthy && (cloneHealthy || interactiveHealthy)) {
                 displayHealthMisses = 0;
                 return;
             }
@@ -1276,10 +1319,24 @@
             displayHealthMisses = 0;
             displayActivationAttempts = 0;
             displayActivationError = '';
-            resetDisplayRuntime();
+            // 非破坏式修复：只重绑观察器、只补建最新回答的副本，
+            // 不再 restoreAllParked()——那会在任意 5 秒边界把上万个节点的回答整层恢复，造成可感知的卡顿。
+            if (!observerHealthy) {
+                displayObserver?.disconnect();
+                displayObserver = new NativeMutationObserver(() => scheduleDisplay(350));
+                displayObserver.observe(observedRoot, {childList: true, subtree: true});
+                displayObservedMain = observedRoot;
+                displayScrollRoot = null;
+                ensureDisplayScrollRoot();
+            }
+            if (!cloneHealthy && !stateful && performance.now() >= shieldAllowedAt) {
+                unshieldTurn();
+                shieldTurn(latest);
+            }
             displayCandidateSize = 0;
             displayStableChecks = 0;
-            checkDisplayActivation();
+            if (!displayEnabled) checkDisplayActivation();
+            else refreshDisplay();
         };
 
         const scheduleDisplayHealthCheck = () => {
