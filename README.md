@@ -25,7 +25,7 @@
 - **修复按钮控件失效**：修复脚本导致的 ChatGPT 回答中按钮控件失效问题。最新回答里出现 ChatGPT 的 pressable 引用、span[role="button"]、输入框或下拉控件时，不再建立静态副本，保留原节点和 React 事件链，避免点击引用没有弹层或跳转。
 - **普通外链不受影响**：没有上述控件的回答仍正常使用静态副本；普通 a href 外链保持完整地址。
 
-## 0.6.1 更新：流式输出期间「内容闪一下」的修复
+## 0.6.2 更新：流式输出期间「内容闪一下」的修复
 
 新版 ChatGPT 页面在流式生成时不再给回答节点挂 `aria-busy` / `data-result-streaming` 等旧标记，只有输入区出现「停止」按钮。0.6.0 的显示层因此把「正在生成」误判为「已完成」，在生成途中反复隐藏最新回答并换成静态副本（每 2~3 秒一次），视觉上表现为内容偶尔闪一下。
 
@@ -34,6 +34,20 @@
 - 生成期间旧回答仍照常停车；`isStreamingTurn` 保持只看单条回答自身，避免停车逻辑回归。
 
 实测（同一会话、50 秒长回答）：流式期间状态切换 89 次 → 0 次；停止按钮消失到副本建立 360 ms（有收尾渲染时约 2.9 秒，与 0.6.0 持平）。输入/菜单/滚动 p95 与 0.6.0 差异均在 ±10% 内。
+
+## 0.6.2 更新：交互控件点击失效
+
+0.6.2 及更早版本把最新回答克隆成静态副本时，点击转发靠「子节点索引路径」从副本映射回原节点。真实页面上副本与原节点的 DOM 结构会随 React 重构而分叉，索引路径中途断裂，转发静默失败——表现为**按钮过一阵子就点不动，刷新又好了**。
+
+0.6.2 改为**语义定位**：
+
+- 只有「副本全文 === 原节点全文」且「全部可交互元素指纹逐一相符」时，才按序号反查原节点；任一不符就不转发；
+- 可交互选择器从 4 类补到 13 类（含 `role=radio/checkbox/switch/tab/menuitem`、`label`）；
+- 定位失败时放出原节点并等两帧重试一次；期间用户一动手即取消；再失败**什么都不点**；
+- 菜单/Tabs 仅在 `aria-expanded`/`aria-selected` 未变时补发指针序列，**且不补 click**，避免重复激活；
+- `iframe/canvas/video` 并入不可克隆判定。
+
+**验证**：真实页面真鼠标点击 PASS（0.6.2 同脚本 FAIL）；护栏正/反对照双 PASS；夹具 65/65；交互时延 5 轮无退化（s1 152/152 ms、s2 128/136 ms、菜单 162/161.5 ms）。
 
 ## 0.6.0 更新：会话内输入交互组件的针对性优化
 
@@ -156,6 +170,14 @@ The script is on by default and no longer waits for a conversation to reach a ce
 
 - **Fixed broken button controls**: fixes button controls in ChatGPT answers that were broken by the script. When the latest answer contains ChatGPT pressable citations, span[role="button"], inputs, textareas, or selects, the script keeps the original node instead of building a static twin, preserving React event handlers and popovers.
 - **Ordinary links still work**: answers without those controls still use the static twin; normal a href links keep their full URLs.
+
+### What's new in 0.6.2
+
+Click forwarding used an index path from the static twin back to the original node. On real pages the twin and the original drift apart as React restructures the DOM, the path breaks mid-way, and the forward silently fails — buttons stop responding after a while and a refresh fixes it.
+
+0.6.2 switches to **semantic localization**: forwarding only happens when the twin's full text equals the original's and every interactive element's fingerprint matches; otherwise nothing is clicked. The interactive selector grows from 4 to 13 kinds (including `role=radio/checkbox/switch/tab/menuitem` and `label`). On failure the original is revealed and one retry runs after two frames (cancelled if the user acts first); if it still fails, nothing is clicked. Menu/Tabs get a pointer sequence only when `aria-expanded`/`aria-selected` did not change, and never an extra click. `iframe/canvas/video` answers are no longer cloned.
+
+Verified: real mouse click on a real page PASSes (same script FAILs on 0.6.2); guard positive/negative controls both PASS; 65/65 fixtures; no latency regression over 5 rounds.
 
 ### What's new in 0.6.0
 

@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.6.1
+// @version      0.6.2
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.6.1';
+        const version = '0.6.2';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
@@ -713,11 +713,14 @@
 
         const hasAssistantTurns = () => isChatGptHost() && getAssistantTurns().length > 0;
 
-        // 只有真正的输入控件才不能用静态副本（复制后无法输入）。
-        // 引用角标 span[role=button] 不属于这一类：点击时会先恢复原节点再转发，弹层位置正确。
+        // 含「复制后必然失效」内容的回答不建静态副本：
+        // - 输入控件：副本里打不了字；
+        // - iframe/canvas/video：克隆会重新加载 / 变空白 / 点击失效。
+        // 引用角标 span[role=button] 不属于这一类：点击时语义定位后转发，弹层位置正确。
+        // 并入同一入口（而非新增判断），刷新与健康检查会自动保持一致。
         /** @param {HTMLElement} turn @returns {boolean} */
-        const hasStatefulInputs = (turn) => Boolean(turn.querySelector(
-            'input, textarea, select, [contenteditable="true"]'));
+        const hasUncloneableContent = (turn) => Boolean(turn.querySelector(
+            'input, textarea, select, [contenteditable="true"], iframe, canvas, video'));
 
         // 停车阈值要判断整条会话的规模；全树计数是 16k 级数组，不能每次刷新或定时重算。
         // 只在「回答数量变化」时重算一次：新回答到达才可能改变会话规模。
@@ -892,6 +895,71 @@
             }
         };
 
+        // 转发与校验共用的可交互元素选择器。补齐 role 系列与 label：
+        // 0.6.1 只认 a/button/[role=button]/summary，会漏掉单选、标签、菜单项、Tabs。
+        const interactiveSelector = 'a, button, summary, label, input, textarea, select,'
+            + ' [role="button"], [role="radio"], [role="checkbox"], [role="switch"],'
+            + ' [role="tab"], [role="menuitem"], [role="combobox"]';
+
+        /** @param {Element} element */
+        const normalizeText = (element) => (element.textContent || '').replace(/\s+/g, ' ').trim();
+
+        // 不上 id（副本已重映射）、不上 aria-checked/disabled（隐藏期可能过期）。
+        /** @param {Element} element */
+        const interactiveFingerprint = (element) => [
+            element.tagName,
+            element.getAttribute('role') || '',
+            element.getAttribute('aria-label') || '',
+            (element.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80)
+        ].join('|');
+
+        // 语义定位：**全文一致 + 全部可交互元素指纹序列一致** 才允许按序号反查。
+        // 单看数量/单个指纹挡不住「题干已换、选项文本相同」的误选（判断题尤其危险）。
+        /** @param {Element} clone @param {HTMLElement | null} turn @param {Element} target @returns {HTMLElement | null} */
+        const resolveOriginalNode = (clone, turn, target) => {
+            if (!turn || !turn.isConnected) return null;
+            if (normalizeText(clone) !== normalizeText(turn)) return null;
+            const from = clone.querySelectorAll(interactiveSelector);
+            const to = turn.querySelectorAll(interactiveSelector);
+            if (from.length === 0 || from.length !== to.length) return null;
+            for (let index = 0; index < from.length; index += 1) {
+                if (interactiveFingerprint(from[index]) !== interactiveFingerprint(to[index])) return null;
+            }
+            const position = Array.prototype.indexOf.call(from, target);
+            if (position < 0) return null;
+            const candidate = to[position];
+            return candidate instanceof HTMLElement && candidate.isConnected ? candidate : null;
+        };
+
+        // 只有「控件带状态属性、普通 click 之后状态没变」才补发指针序列。
+        // 补发里**不再发 click**，避免「提交答案」这类按钮被激活两次。
+        /** @param {HTMLElement} element */
+        const activateElement = (element) => {
+            const stateAttr = element.hasAttribute('aria-expanded') ? 'aria-expanded'
+                : element.getAttribute('role') === 'tab' ? 'aria-selected'
+                    : null;
+            if (!stateAttr) {
+                element.focus({preventScroll: true});
+                element.click();
+                return;
+            }
+            const before = element.getAttribute(stateAttr);
+            element.focus({preventScroll: true});
+            element.click();
+            if (!element.isConnected) return;
+            if (element.getAttribute(stateAttr) !== before) return;
+            const rect = element.getBoundingClientRect();
+            const base = {
+                bubbles: true, cancelable: true, composed: true,
+                clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+                button: 0
+            };
+            element.dispatchEvent(new PointerEvent('pointerdown', {...base, buttons: 1, pointerType: 'mouse', isPrimary: true}));
+            element.dispatchEvent(new MouseEvent('mousedown', {...base, buttons: 1}));
+            element.dispatchEvent(new PointerEvent('pointerup', {...base, buttons: 0, pointerType: 'mouse', isPrimary: true}));
+            element.dispatchEvent(new MouseEvent('mouseup', {...base, buttons: 0}));
+        };
+
         /** @param {HTMLElement} turn */
         const shieldTurn = (turn) => {
             if (!turn.isConnected) return;
@@ -932,38 +1000,47 @@
             adjustCloneHeight();
             clone.addEventListener('click', (event) => {
                 const target = event.target instanceof Element
-                    ? event.target.closest('a, button, [role="button"], summary')
+                    ? event.target.closest(interactiveSelector)
                     : null;
                 if (!(target instanceof HTMLElement)) return;
                 if (target.tagName === 'A') {
                     const href = target.getAttribute('href');
                     if (href && !href.startsWith('#')) return;
                 }
-                const path = [];
-                /** @type {Element | null} */
-                let node = target;
-                while (node && node !== clone) {
-                    /** @type {Element | null} */
-                    const nodeParent = node.parentElement;
-                    if (!nodeParent) break;
-                    path.unshift(Array.prototype.indexOf.call(nodeParent.children, node));
-                    node = nodeParent;
+                const activeState = shieldState;
+                if (!activeState) return;
+                // 顺序很重要：先拦事件、再压制重建、最后才取局部引用（unshieldTurn 会清空 shieldState）。
+                event.preventDefault();
+                event.stopPropagation();
+                const {turn: originalTurn, clone: twinClone} = activeState;
+                // 成功失败都压制重建：否则放出原节点后可能立刻又被隐藏，「再点一次」就不成立。
+                shieldAllowedAt = Math.max(shieldAllowedAt, performance.now() + 10000);
+
+                const first = resolveOriginalNode(twinClone, originalTurn, target);
+                unshieldTurn();
+                if (first && first.isConnected) {
+                    activateElement(first);
+                    return;
                 }
-                /** @type {Element | null} */
-                let original = shieldState?.turn ?? null;
-                for (const position of path) {
-                    original = original?.children[position] ?? null;
-                    if (!original) break;
-                }
-                if (original instanceof HTMLElement) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    // 引用弹层、浮层依赖原节点真实布局位置：先恢复原节点，再转发这次点击。
-                    // 之后一段时间不再重建孪生，避免弹层刚打开就被隐藏。
-                    shieldAllowedAt = performance.now() + 10000;
-                    unshieldTurn();
-                    original.click();
-                }
+
+                // 兜底：隐藏期懒渲染收缩会让内容暂时缺失，放出后等两帧再定位一次。
+                // 期间一旦用户自己动手（pointerdown/keydown），立刻取消，避免重复激活。
+                let cancelled = false;
+                const cancelRetry = () => { cancelled = true; };
+                document.addEventListener('pointerdown', cancelRetry, {capture: true, once: true});
+                document.addEventListener('keydown', cancelRetry, {capture: true, once: true});
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                    document.removeEventListener('pointerdown', cancelRetry, true);
+                    document.removeEventListener('keydown', cancelRetry, true);
+                    if (cancelled) return;
+                    // 原节点可能已被 React 整棵替换：退回到当前最后一条回答再试。
+                    const liveTurn = originalTurn.isConnected
+                        ? originalTurn
+                        : (getAssistantTurns().slice(-1)[0] ?? null);
+                    const retry = resolveOriginalNode(twinClone, liveTurn, target);
+                    // 定位不到就什么都不点：原节点已可见，用户自己再点一次必然生效。
+                    if (retry) activateElement(retry);
+                }));
             }, true);
             shieldState = {turn, clone, signature, turnHeight, displayValue, displayPriority};
             displayCounters.shield += 1;
@@ -1243,7 +1320,7 @@
                     if (performance.now() >= shieldAllowedAt) shieldTurn(latest);
                 }
             }
-            if (hasStatefulInputs(latest)) {
+            if (hasUncloneableContent(latest)) {
                 // 回答内部有可输入的控件：保留原节点，不能克隆。
                 unshieldTurn();
                 if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
@@ -1391,7 +1468,7 @@
                 const assistants = getAssistantTurns();
                 const latest = assistants[assistants.length - 1];
                 if (!displayEnabled) throw new Error('轻量显示未进入启用状态');
-                if (latest && !isLatestGenerating(latest) && !hasStatefulInputs(latest)
+                if (latest && !isLatestGenerating(latest) && !hasUncloneableContent(latest)
                     && !document.querySelector('[data-lcl-twin]')) {
                     throw new Error('最新助手回答静态副本未建立');
                 }
@@ -1467,7 +1544,7 @@
                 displayHealthMisses = 0;
                 return;
             }
-            const stateful = hasStatefulInputs(latest);
+            const stateful = hasUncloneableContent(latest);
             const cloneHealthy = Boolean(displayEnabled && shieldState
                 && shieldState.turn === latest && shieldState.turn.isConnected
                 && shieldState.clone.isConnected && latest.dataset.lclShielded === '1');
