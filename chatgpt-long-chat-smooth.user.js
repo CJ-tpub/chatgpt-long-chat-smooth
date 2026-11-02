@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.6.0
+// @version      0.6.1
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.6.0';
+        const version = '0.6.1';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
@@ -746,6 +746,52 @@
         const isStreamingTurn = (turn) => turn.getAttribute('aria-busy') === 'true'
             || Boolean(turn.querySelector('[data-result-streaming], [data-message-streaming], [data-streaming="true"], .result-streaming, .streaming'));
 
+        // 新版页面在流式输出时不再给回答节点挂 aria-busy/data-streaming；唯一稳定信号是输入区的「停止」按钮。
+        // 只认消息子树之外、且真实可见的按钮，避免克隆内容或回答内同名按钮造成误判。
+        const isPageGenerating = () => {
+            const buttons = document.querySelectorAll('button[aria-label="停止"], button[aria-label="Stop"],'
+                + ' button[aria-label="Stop generating"], button[data-testid="stop-button"],'
+                + ' button[data-testid="composer-stop-button"]');
+            for (const button of buttons) {
+                if (button.closest('[data-lcl-twin], [data-chatgpt-search-unit-key], [data-message-author-role],'
+                    + ' [data-testid^="conversation-turn-"]')) continue;
+                if (button.getClientRects().length) return true;
+            }
+            return false;
+        };
+
+        // 第二重保险：即使所有标记都失效，只要最新回答的文字在最近 3 秒内增长过，就仍视为生成中。
+        // 用历史最大值比较，避免页面隐藏回答后的懒渲染收缩被误判成「没有增长」。
+        /** @type {HTMLElement | null} */
+        let growthTurn = null;
+        let growthMaxLength = 0;
+        let growthAt = -Infinity;
+        let stopButtonSeenAt = -Infinity;
+        // 最后一次增长发生在「停止按钮最后出现 + 800ms」内，说明生成刚结束，用短窗口；
+        // 之后仍有增长，说明可能是没有按钮的生成（或选择器失配），回到 3 秒兜底。
+        const growthWindowMs = () => (growthAt <= stopButtonSeenAt + 800 ? 800 : 3000);
+        /** @param {HTMLElement} latest */
+        const isLatestGenerating = (latest) => {
+            if (!latest) return false;
+            // 即使停止按钮命中，也持续更新增长基线：按钮消失后窗口从最后一次真实增长算起，
+            // 而不是从「按钮消失后的第一次采样」算起。
+            const length = (latest.textContent ?? '').length;
+            if (latest !== growthTurn) {
+                // 切换回答/会话时只重置基线，不把两个不同回答的长度差算成「增长」。
+                growthTurn = latest;
+                growthMaxLength = length;
+            } else if (length > growthMaxLength) {
+                growthMaxLength = length;
+                growthAt = performance.now();
+            }
+            if (isStreamingTurn(latest)) return true;
+            if (isPageGenerating()) {
+                stopButtonSeenAt = performance.now();
+                return true;
+            }
+            return performance.now() - growthAt < growthWindowMs();
+        };
+
         const ensureDisplayScrollRoot = () => {
             if (displayScrollRoot?.isConnected) return displayScrollRoot;
             const first = getAssistantTurns()[0];
@@ -1182,20 +1228,20 @@
             const assistants = getAssistantTurns();
             if (!assistants.length) return;
             const latest = assistants[assistants.length - 1];
+            const generating = isLatestGenerating(latest);
+            if (generating) {
+                unshieldTurn();
+                if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
+                // 增长窗口结束后若没有新的 DOM 变动，也要补一次刷新，避免副本迟迟不建立。
+                scheduleGrowthRecheck();
+                return;
+            }
             if (shieldState && shieldState.turn !== latest) {
                 if (!adoptShieldToLatest(latest)) {
                     // React 替换了最新回答节点：立刻重建孪生，不要留下 1.5～3 秒的无优化窗口。
                     unshieldTurn();
                     if (performance.now() >= shieldAllowedAt) shieldTurn(latest);
                 }
-            }
-            const scrollRoot = ensureDisplayScrollRoot();
-            const atBottom = scrollRoot instanceof Element
-                && scrollRoot.scrollTop + scrollRoot.clientHeight >= scrollRoot.scrollHeight - 80;
-            if (isStreamingTurn(latest)) {
-                unshieldTurn();
-                if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
-                return;
             }
             if (hasStatefulInputs(latest)) {
                 // 回答内部有可输入的控件：保留原节点，不能克隆。
@@ -1213,6 +1259,19 @@
         const scheduleDisplay = (delay) => {
             window.clearTimeout(displayScrollTimer);
             displayScrollTimer = window.setTimeout(() => { displayScrollTimer = 0; refreshDisplaySafely(); }, delay);
+        };
+
+        // 增长窗口内不建立副本；窗口结束前补一次刷新，避免页面没有新的 DOM 变动时副本迟迟不建立。
+        let growthRecheckTimer = 0;
+        const scheduleGrowthRecheck = () => {
+            if (growthRecheckTimer) return;
+            const remaining = growthWindowMs() - (performance.now() - growthAt);
+            // 窗口已过仍判为生成中，说明靠停止按钮等显式信号维持：低频轮询即可，避免 150ms 级刷新风暴。
+            const delay = remaining > 0 ? Math.min(3150, remaining + 150) : 1000;
+            growthRecheckTimer = window.setTimeout(() => {
+                growthRecheckTimer = 0;
+                refreshDisplaySafely();
+            }, delay);
         };
 
         const maintainParking = () => {
@@ -1263,6 +1322,8 @@
                 displayHealthMisses = 0;
                 window.clearInterval(displayInterval);
                 displayInterval = 0;
+                window.clearTimeout(growthRecheckTimer);
+                growthRecheckTimer = 0;
                 updateUi();
                 return;
             }
@@ -1289,6 +1350,8 @@
         const resetDisplayRuntime = () => {
             window.clearTimeout(displayScrollTimer);
             displayScrollTimer = 0;
+            window.clearTimeout(growthRecheckTimer);
+            growthRecheckTimer = 0;
             window.clearTimeout(displayHealthCheckTimer);
             displayHealthCheckTimer = 0;
             window.clearInterval(displayInterval);
@@ -1328,7 +1391,8 @@
                 const assistants = getAssistantTurns();
                 const latest = assistants[assistants.length - 1];
                 if (!displayEnabled) throw new Error('轻量显示未进入启用状态');
-                if (latest && !isStreamingTurn(latest) && !document.querySelector('[data-lcl-twin]')) {
+                if (latest && !isLatestGenerating(latest) && !hasStatefulInputs(latest)
+                    && !document.querySelector('[data-lcl-twin]')) {
                     throw new Error('最新助手回答静态副本未建立');
                 }
                 displayActivationAttempts = 0;
@@ -1361,7 +1425,7 @@
                 return;
             }
             const latest = assistants[assistants.length - 1];
-            if (isStreamingTurn(latest)) {
+            if (isLatestGenerating(latest)) {
                 displayCandidateSize = 0;
                 displayStableChecks = 0;
                 return;
@@ -1384,22 +1448,31 @@
                 return;
             }
             const latest = assistants[assistants.length - 1];
-            if (isStreamingTurn(latest)) {
-                displayHealthMisses = 0;
-                return;
-            }
+            // 专注模式退出与观察器修复不依赖生成状态，先生效，避免生成期被整体跳过。
             if (focusModeTurn && (!focusModeTurn.isConnected || focusTurnOf(document.activeElement) !== focusModeTurn)) {
                 exitFocusMode();
             }
             const observedRoot = document.querySelector('main') ?? document.body;
-            const observerHealthy = Boolean(displayObserver && displayObservedMain === observedRoot
+            const observedHealthy = Boolean(displayObserver && displayObservedMain === observedRoot
                 && displayObservedMain?.isConnected);
+            if (displayEnabled && !observedHealthy) {
+                displayObserver?.disconnect();
+                displayObserver = new NativeMutationObserver(() => scheduleDisplay(350));
+                displayObserver.observe(observedRoot, {childList: true, subtree: true});
+                displayObservedMain = observedRoot;
+                displayScrollRoot = null;
+                ensureDisplayScrollRoot();
+            }
+            if (isLatestGenerating(latest)) {
+                displayHealthMisses = 0;
+                return;
+            }
             const stateful = hasStatefulInputs(latest);
             const cloneHealthy = Boolean(displayEnabled && shieldState
                 && shieldState.turn === latest && shieldState.turn.isConnected
                 && shieldState.clone.isConnected && latest.dataset.lclShielded === '1');
             const interactiveHealthy = Boolean(displayEnabled && stateful && !shieldState);
-            if (observerHealthy && (cloneHealthy || interactiveHealthy)) {
+            if (cloneHealthy || interactiveHealthy) {
                 displayHealthMisses = 0;
                 return;
             }
@@ -1408,17 +1481,9 @@
             displayHealthMisses = 0;
             displayActivationAttempts = 0;
             displayActivationError = '';
-            // 非破坏式修复：只重绑观察器、只补建最新回答的副本，
-            // 不再 restoreAllParked()——那会在任意 5 秒边界把上万个节点的回答整层恢复，造成可感知的卡顿。
-            if (!observerHealthy) {
-                displayObserver?.disconnect();
-                displayObserver = new NativeMutationObserver(() => scheduleDisplay(350));
-                displayObserver.observe(observedRoot, {childList: true, subtree: true});
-                displayObservedMain = observedRoot;
-                displayScrollRoot = null;
-                ensureDisplayScrollRoot();
-            }
-            if (!cloneHealthy && !stateful && performance.now() >= shieldAllowedAt) {
+            // 非破坏式修复：只补建最新回答的副本，
+            // 不 restoreAllParked()——那会在任意 5 秒边界把上万个节点的回答整层恢复，造成可感知的卡顿。
+            if (!stateful && performance.now() >= shieldAllowedAt) {
                 unshieldTurn();
                 shieldTurn(latest);
             }
@@ -1763,7 +1828,7 @@
                 const assistants = getAssistantTurns();
                 if (!assistants.length) return;
                 const latest = assistants[assistants.length - 1];
-                if (!isStreamingTurn(latest)) {
+                if (!isLatestGenerating(latest)) {
                     showFaultNotice('长对话优化连续初始化失败：页面结构可能已更新。可在篡改猴中停用本脚本。');
                 }
             }, 12000);
