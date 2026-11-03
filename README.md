@@ -1,6 +1,6 @@
 # ChatGPT 网页长对话交互卡顿优化
 
-[English](#english)
+[English](#english-chatgpt-web-long-chat-interaction-optimizer)
 
 一个默认开启、无面板的 Tampermonkey 用户脚本，专门优化 **ChatGPT 网页版（chatgpt.com）的长对话 / 长会话交互卡顿**：解决输入迟钝、删除掉帧、菜单点击延迟和滚动卡顿。装好后不需要配置，也不会改变模型上下文或发送内容。
 
