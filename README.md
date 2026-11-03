@@ -10,95 +10,11 @@
 
 脚本默认启用，不再要求会话达到某个节点数；出现完整回答后，会等它稳定再应用。旧回答收起只在确实很重的多回答会话里做，避免短对话被改得面目全非。
 
-## 0.4.4 更新
+## 最近更新
 
-- **生命周期自愈**：页面从后台恢复、ChatGPT 替换主区域、静态副本被移除时，脚本会释放旧观察器并重新建立显示层。
-- **失败退避与误报修正**：显示层初始化失败会清理状态并退避重试；只有连续多次真实失败才显示故障提示，不再把回答延迟渲染误判为页面结构变化。
+**0.6.5：交互式回答里的滑杆可以正常拖动。** 以前滑杆位于静态副本里、拖拽事件无法转发，数值停在 1.50；本版对含拖拽控件的回答保留原节点，滑杆、曲线和实验数值实时响应。
 
-## 0.4.5 更新
-
-- **过期副本修复**：继续对话时，即使页面没有流式标记，也会给最新回答保存“文字长度 + 节点数”签名；内容变化时立即恢复原回答，等稳定后再重建副本，避免部分内容一直不显示、只能刷新页面。
-- **健康检查校验签名**：生命周期自愈也会检查静态副本是否过期，发现内容不一致时重新建立。
-
-## 0.4.6 更新
-
-- **修复按钮控件失效**：修复脚本导致的 ChatGPT 回答中按钮控件失效问题。最新回答里出现 ChatGPT 的 pressable 引用、span[role="button"]、输入框或下拉控件时，不再建立静态副本，保留原节点和 React 事件链，避免点击引用没有弹层或跳转。
-- **普通外链不受影响**：没有上述控件的回答仍正常使用静态副本；普通 a href 外链保持完整地址。
-
-## 0.6.2 更新：流式输出期间「内容闪一下」的修复
-
-新版 ChatGPT 页面在流式生成时不再给回答节点挂 `aria-busy` / `data-result-streaming` 等旧标记，只有输入区出现「停止」按钮。0.6.0 的显示层因此把「正在生成」误判为「已完成」，在生成途中反复隐藏最新回答并换成静态副本（每 2~3 秒一次），视觉上表现为内容偶尔闪一下。
-
-- 生成判定改为三重信号：旧流式标记、输入区「停止」按钮（排除消息子树与隐藏按钮）、最新回答最近 3 秒内仍在增长；
-- 停止按钮消失后只留 0.8 秒收尾窗口，副本通常在 0.4~1 秒内补建，不再空等；
-- 生成期间旧回答仍照常停车；`isStreamingTurn` 保持只看单条回答自身，避免停车逻辑回归。
-
-实测（同一会话、50 秒长回答）：流式期间状态切换 89 次 → 0 次；停止按钮消失到副本建立 360 ms（有收尾渲染时约 2.9 秒，与 0.6.0 持平）。输入/菜单/滚动 p95 与 0.6.0 差异均在 ±10% 内。
-
-## 0.6.5 更新：交互式回答里的滑杆拖不动
-
-**效果**：ChatGPT「学习模式」这类交互式回答里，会有「调整观察时间 t₀」这类滑杆。以前拖动完全没反应、数值一直停在 1.50；0.6.5 起可以正常拖动，曲线和三个实验的数值实时跟着更新。
-
-**原因**：脚本为了减少长会话卡顿，会把最新回答做成一份静态副本显示。副本没有网页的事件绑定——按钮类控件还能转接到原节点，拖拽类不行。滑杆在副本里，自然拖不动。
-
-**技术细节**：含 `[role="slider"]`、`[role="spinbutton"]`、`[role="scrollbar"]`、`[draggable="true"]` 的回答不再建立副本，保留原节点；副本收到 `pointerdown` 且光标为 `grab` 类时立刻放出原节点兜底（用户重新拖一次即可）。回归 65/65，滑块专项 16/16，三轮交错延迟对比无退化。
-
-## 0.6.4 更新：专注模式修复
-
-交互回答专注模式（焦点进入回答内输入框时收起其它回答、隐藏静态副本，让按键重算只覆盖正在编辑的那条）此前**只有第一次进入有效**，第二次起静默失效。0.6.4 修复：
-
-- 不再把「已隐藏」记在 DOM 属性上（该属性跨进出残留），改为记住被隐藏的元素；
-- 退出时**不论副本是否还在 DOM 上都会恢复**——此前副本脱离 DOM 时会被跳过，之后被插回时带着 `display:none`，**最新回答整条空白**；
-- 专注期间副本被重建时会重新隐藏（放在高度补偿之后，避免补偿成一整条回答的高度）；
-- 最新回答在专注中被收起时，建副本前先放出——否则克隆会继承 `display:none`，同样导致永久空白；
-- 用户消息的编辑框不再触发整页收起；嵌套结构下不会误收起焦点所在的回答。
-
-**验证**：专注模式专项 0.6.4 PASS / 0.6.3 FAIL；**真实 chatgpt.com 页面 + 真鼠标/真键盘：专注模式 9/9（0.6.3 为 6/9，第 2、3 次进入失败），点击转发 4/4**；夹具 65/65、逐项测试 9/9 不回退；交互时延无退化（s1 168→168、s2 144→144、菜单 166.8→167.3 ms）。
-
-## 0.6.3 更新：交互控件的健壮性
-
-0.6.2 把点击转发改成语义定位后，经外部代码审查找出若干实作缺陷，0.6.3 逐项修复：
-
-- **重建副本不再打断操作**：新增安全闸——冷却未结束、有外部弹层打开、或正在键盘操作时不重建。此前弹层开着的 10 秒后会重建，锚点消失导致弹层跳位/关闭；按下与抬起之间重建还会让点击丢失。
-- **交互控件覆盖补全**：`role=menuitemradio/menuitemcheckbox/option/treeitem/link` 等一并纳入；无语义但 `cursor:pointer` 的元素改为「只释放原节点、不转发」。
-- **不再有「开了又关」**：补发指针序列前的状态判断延迟到 50ms（React 18 离散更新在微任务提交，同步读会拿到旧值）。
-- **重试有上限**：rAF 轮询 + 400ms 截止 + 标签页隐藏时暂停，避免切回标签页时替你点下去。
-- **重建时焦点不丢**：此前焦点会被甩到 `BODY`，现在按子节点路径移交到副本。
-- 同源链接改为转发；含 `iframe/canvas/video/audio/embed/object` 的回答不再克隆；`input[type=hidden]` 不再阻止建副本。
-
-**验证**：逐项测试 0.6.3 **9/9**、0.6.2 **2/9**；真实页面 **4/4**、0.6.2 **2/4**；本地夹具 65/65；交互时延无退化（s1 160→152、s2 128→128、菜单 165→148.4 ms）。
-
-## 0.6.2 更新：交互控件点击失效
-
-0.6.2 及更早版本把最新回答克隆成静态副本时，点击转发靠「子节点索引路径」从副本映射回原节点。真实页面上副本与原节点的 DOM 结构会随 React 重构而分叉，索引路径中途断裂，转发静默失败——表现为**按钮过一阵子就点不动，刷新又好了**。
-
-0.6.2 改为**语义定位**：
-
-- 只有「副本全文 === 原节点全文」且「全部可交互元素指纹逐一相符」时，才按序号反查原节点；任一不符就不转发；
-- 可交互选择器从 4 类补到 13 类（含 `role=radio/checkbox/switch/tab/menuitem`、`label`）；
-- 定位失败时放出原节点并等两帧重试一次；期间用户一动手即取消；再失败**什么都不点**；
-- 菜单/Tabs 仅在 `aria-expanded`/`aria-selected` 未变时补发指针序列，**且不补 click**，避免重复激活；
-- `iframe/canvas/video` 并入不可克隆判定。
-
-**验证**：真实页面真鼠标点击 PASS（0.6.2 同脚本 FAIL）；护栏正/反对照双 PASS；夹具 65/65；交互时延 5 轮无退化（s1 152/152 ms、s2 128/136 ms、菜单 162/161.5 ms）。
-
-## 0.6.0 更新：会话内输入交互组件的针对性优化
-
-ChatGPT 的交互式回答（例如 20 题测验，第 15 题起是文本框）里快速连打时，页面每次按键都会做一次**全量样式重算**
-（CDP 实测 ≈100 ms/键，布局与 JS 可忽略）。0.6.0 增加「交互回答专注模式」：
-
-- 焦点进入某条回答里的输入框时，把**其它助手回答**用等高占位临时收起、并隐藏最新回答的静态副本；
-- 这样每次按键的样式重算只覆盖正在编辑的那一条：**输入 p95 从 120 ms 降到 32 ms，每次按键重算 ≈24 ms**；
-- 失焦 600 ms 后精确还原；主输入框不受影响（仍为 16 ms）。
-
-已知取舍：编辑期间其它回答显示为等高占位（与「旧回答收起」外观一致），失焦即恢复。
-
-## 0.5.0 更新
-
-- **收回两处负优化**：0.4.5 的「文字长度 + 节点数」精确签名会让静态副本反复重建（页面隐藏回答后会做一次懒渲染收缩，签名因此抖动；实测单场景长任务最长 9.7 秒）；0.4.6 的 pressable 保护会让几乎每条带引用角标的最新回答都不再建立副本。0.5.0 只在两种情况下撤销或跳过副本：内容确实比副本更长，或回答里真的有输入框/下拉框。
-- **引用角标可以正常点开**：带引用角标的回答照常使用静态副本；点击引用时脚本先恢复原节点再转发这一次点击，弹层位置与关闭脚本时一致。
-- **停车力度回到 0.3.3**：在底部时，完全离开视口上方的旧回答都会收起；不在底部时留 1.5 个视口。恢复只在占位接近视口时发生，并在恢复后 3 秒内不再收起。
-- **健康检查不再整层重置**：只重新绑定观察器、只补建最新回答的副本，不会把已收起的旧回答全部展开。
+完整记录见 [CHANGELOG.md](CHANGELOG.md)；安装用户也可以看 [Greasy Fork 版本历史](https://greasyfork.org/zh-CN/scripts/601032/versions)。
 
 ## 它解决什么问题
 
@@ -189,78 +105,9 @@ This is a **browser-side optimization for the ChatGPT web app**: it improves int
 
 The script is on by default and no longer waits for a conversation to reach a certain node count. Once a complete answer appears, it waits for the answer to stabilize before applying. Older answers are parked only in genuinely heavy multi-answer threads, so short chats are left mostly intact.
 
-### What's new in 0.4.4
+### What's new
 
-- **Lifecycle self-healing**: when the page returns from the background, ChatGPT replaces the main region, or the static twin is removed, the script releases the stale observer and rebuilds the display layer.
-- **Retry with backoff, fewer false alarms**: initialization failures now reset state and retry with backoff; the fault notice appears only after repeated real failures, not when an answer is simply still rendering.
-
-### What's new in 0.4.5
-
-- **Stale twin fix**: during continued conversation, the script now tracks a lightweight signature (text length + descendant count) even when ChatGPT sets no streaming marker. When the latest answer changes, it immediately restores the original answer and waits for it to stabilize before rebuilding the twin. This prevents partially loaded or stale answer content.
-- **Signature-aware health check**: lifecycle recovery also verifies that the static twin still matches the latest answer.
-
-### What's new in 0.4.6
-
-- **Fixed broken button controls**: fixes button controls in ChatGPT answers that were broken by the script. When the latest answer contains ChatGPT pressable citations, span[role="button"], inputs, textareas, or selects, the script keeps the original node instead of building a static twin, preserving React event handlers and popovers.
-- **Ordinary links still work**: answers without those controls still use the static twin; normal a href links keep their full URLs.
-
-### What's new in 0.6.5
-
-**What you'll notice**: interactive answers such as the "learning mode" lessons sometimes contain drag sliders (for example "adjust observation time t0"). They used to be completely unresponsive, with the value stuck at 1.50. From 0.6.5 they drag normally and the curves and per-experiment values update live.
-
-**Why it happened**: to keep long conversations fast, the script displays the latest answer as a static clone. Clones have no page event handlers; click-like controls can be forwarded to the original node, but drag gestures cannot, so the slider was dead.
-
-**Technical details**: answers containing `[role="slider"]`, `[role="spinbutton"]`, `[role="scrollbar"]` or `[draggable="true"]` no longer get a clone and keep the original node. As a fallback, a clone releases the original node on `pointerdown` when the target shows a grab-style cursor. Verification: 65/65 regression, 16/16 slider probe, three interleaved latency rounds show no regression.
-
-### What's new in 0.6.4
-
-Focus mode used to work only on first entry. Fixed:
-
-- No longer records "hidden" on a DOM attribute that survives enter/exit; remembers the hidden element instead.
-- Restores the twin on exit even when it is detached from the DOM — previously it was skipped and later re-inserted with `display:none`, leaving the newest answer **permanently blank**.
-- Re-hides the twin if it is rebuilt during focus mode (after height compensation, so the compensating margin stays correct).
-- Releases the newest answer from parking before cloning it, so the clone does not inherit `display:none`.
-- Editing fields in user messages no longer collapse the whole page; nested structures no longer hide the answer you are editing.
-
-Verified on the real chatgpt.com page with a real mouse and keyboard: focus mode 9/9 (0.6.3 scores 6/9, failing on the 2nd and 3rd entry) and click forwarding 4/4.
-
-### What's new in 0.6.3
-
-Robustness fixes for the click forwarding introduced in 0.6.2:
-
-- **Rebuilding the twin no longer interrupts you**: rebuild is gated on cooldown, open popups and active keyboard use. Previously a popup opened at second 0 lost its anchor at second 10, and a rebuild between pointerdown and pointerup swallowed the click.
-- **Broader interactive coverage**: `role=menuitemradio/menuitemcheckbox/option/treeitem/link` and friends; elements with no role but `cursor:pointer` now release the original instead of being silently swallowed.
-- **No more "opens then closes"**: the state check before re-dispatching pointer events is deferred by 50 ms, because React 18 commits discrete updates in a microtask.
-- **Bounded retry**: rAF polling with a 400 ms deadline, paused while the tab is hidden.
-- **Focus is preserved on rebuild** instead of falling back to `BODY`.
-- Same-origin links are forwarded; answers containing `iframe/canvas/video/audio/embed/object` are no longer cloned; `input[type=hidden]` no longer blocks cloning.
-
-Verified: per-item tests 9/9 on 0.6.3 vs 2/9 on 0.6.2; real-page 4/4 vs 2/4; 65/65 fixtures; no latency regression.
-
-### What's new in 0.6.2
-
-Click forwarding used an index path from the static twin back to the original node. On real pages the twin and the original drift apart as React restructures the DOM, the path breaks mid-way, and the forward silently fails — buttons stop responding after a while and a refresh fixes it.
-
-0.6.2 switches to **semantic localization**: forwarding only happens when the twin's full text equals the original's and every interactive element's fingerprint matches; otherwise nothing is clicked. The interactive selector grows from 4 to 13 kinds (including `role=radio/checkbox/switch/tab/menuitem` and `label`). On failure the original is revealed and one retry runs after two frames (cancelled if the user acts first); if it still fails, nothing is clicked. Menu/Tabs get a pointer sequence only when `aria-expanded`/`aria-selected` did not change, and never an extra click. `iframe/canvas/video` answers are no longer cloned.
-
-Verified: real mouse click on a real page PASSes (same script FAILs on 0.6.2); guard positive/negative controls both PASS; 65/65 fixtures; no latency regression over 5 rounds.
-
-### What's new in 0.6.0
-
-A targeted fix for ChatGPT's interactive answer components inside a conversation (for example a 20-question quiz whose Q15+ fields are textareas) do a **full style recalculation** on every keystroke (measured ≈100 ms/key via CDP; layout and JS are negligible). 0.6.0 adds an "interactive answer focus mode":
-
-- when focus enters an editable field inside an answer, every **other** assistant answer is temporarily collapsed into an equal-height placeholder and the latest answer's static twin is hidden;
-- the per-keystroke style recalculation then covers only the answer being edited: **input p95 drops from 120 ms to 32 ms (recalc ≈24 ms/key)**;
-- everything is restored 600 ms after focus leaves; the main composer is unaffected (still 16 ms).
-
-Trade-off: while editing, other answers appear as equal-height placeholders (same look as the existing parked answers) and come back on blur.
-
-### What's new in 0.5.0
-
-- **Two negative optimizations removed**: the exact "text length + node count" signature added in 0.4.5 made the twin rebuild itself repeatedly (hiding an answer triggers a lazy-render shrink, so the signature kept changing; the worst long task measured 9.7 s in one scenario). The 0.4.6 pressable guard made almost every answer with citation chips skip the twin entirely. 0.5.0 only drops the twin when the content is genuinely longer than the snapshot, or when the answer really contains inputs or selects.
-- **Citation chips work again**: answers with citation chips still use the static twin; clicking a citation first restores the original node and then forwards the click, so popovers anchor exactly as with the script disabled.
-- **Parking strength back to 0.3.3**: while at the bottom, every older answer fully above the viewport is parked; otherwise a 1.5-viewport margin is kept. Restore happens only when a placeholder approaches the viewport, and a restored answer is not parked again for 3 seconds.
-- **Non-destructive health check**: it only re-binds the observer and rebuilds the latest answer's twin; it never expands all parked answers.
+Full changelog: [CHANGELOG.md](CHANGELOG.md). Per-version notes are also listed on [Greasy Fork](https://greasyfork.org/zh-CN/scripts/601032/versions).
 
 ### What it fixes
 
