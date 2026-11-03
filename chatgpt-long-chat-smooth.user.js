@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.6.2
+// @version      0.6.3
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.6.2';
+        const version = '0.6.3';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
@@ -703,7 +703,15 @@
                 inputBusyUntil = performance.now() + 300;
             }, {capture: true, passive: true});
         }
-        const displayCounters = {shield: 0, unshield: 0, park: 0, unpark: 0, refresh: 0, reattach: 0, contentUnshield: 0, focusEnter: 0, focusExit: 0};
+        const displayCounters = {
+            shield: 0, unshield: 0, park: 0, unpark: 0, refresh: 0, reattach: 0,
+            contentUnshield: 0, focusEnter: 0, focusExit: 0,
+            // 点击转发观测：主路径成功 / 兜底重试成功 / 最终丢弃（不点击）
+            forwardFirst: 0, forwardRetry: 0, forwardDropped: 0
+        };
+        // 最近一次被「放出来」让用户操作的回答：期间用户在原节点上动手就持续续期，避免 10 秒后被打断。
+        /** @type {HTMLElement | null} */
+        let releasedTurn = null;
 
         const isChatGptHost = () => location.hostname === 'chatgpt.com' || location.hostname.endsWith('.chatgpt.com')
             || testDisplayEnabled;
@@ -720,7 +728,9 @@
         // 并入同一入口（而非新增判断），刷新与健康检查会自动保持一致。
         /** @param {HTMLElement} turn @returns {boolean} */
         const hasUncloneableContent = (turn) => Boolean(turn.querySelector(
-            'input, textarea, select, [contenteditable="true"], iframe, canvas, video'));
+            'input:not([type="hidden"]), textarea, select,'
+            + ' [contenteditable]:not([contenteditable="false"]),'
+            + ' iframe, canvas, video, audio, embed, object'));
 
         // 停车阈值要判断整条会话的规模；全树计数是 16k 级数组，不能每次刷新或定时重算。
         // 只在「回答数量变化」时重算一次：新回答到达才可能改变会话规模。
@@ -898,8 +908,9 @@
         // 转发与校验共用的可交互元素选择器。补齐 role 系列与 label：
         // 0.6.1 只认 a/button/[role=button]/summary，会漏掉单选、标签、菜单项、Tabs。
         const interactiveSelector = 'a, button, summary, label, input, textarea, select,'
-            + ' [role="button"], [role="radio"], [role="checkbox"], [role="switch"],'
-            + ' [role="tab"], [role="menuitem"], [role="combobox"]';
+            + ' [role="button"], [role="link"], [role="radio"], [role="checkbox"], [role="switch"],'
+            + ' [role="tab"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"],'
+            + ' [role="option"], [role="treeitem"], [role="combobox"]';
 
         /** @param {Element} element */
         const normalizeText = (element) => (element.textContent || '').replace(/\s+/g, ' ').trim();
@@ -946,23 +957,73 @@
             const before = element.getAttribute(stateAttr);
             element.focus({preventScroll: true});
             element.click();
-            if (!element.isConnected) return;
-            if (element.getAttribute(stateAttr) !== before) return;
-            const rect = element.getBoundingClientRect();
-            const base = {
-                bubbles: true, cancelable: true, composed: true,
-                clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
-                button: 0
-            };
-            element.dispatchEvent(new PointerEvent('pointerdown', {...base, buttons: 1, pointerType: 'mouse', isPrimary: true}));
-            element.dispatchEvent(new MouseEvent('mousedown', {...base, buttons: 1}));
-            element.dispatchEvent(new PointerEvent('pointerup', {...base, buttons: 0, pointerType: 'mouse', isPrimary: true}));
-            element.dispatchEvent(new MouseEvent('mouseup', {...base, buttons: 0}));
+            // React 18 的离散事件在微任务里提交：click() 之后同步读属性拿到的还是旧值，
+            // 直接判断会让「同时响应 click 与 pointerdown」的控件被切换两次（开了又关）。
+            // 因此延迟一拍再判断，且只在状态确实没变时才补发指针序列。
+            window.setTimeout(() => {
+                if (!element.isConnected) return;
+                if (element.getAttribute(stateAttr) !== before) return;
+                const rect = element.getBoundingClientRect();
+                const base = {
+                    bubbles: true, cancelable: true, composed: true,
+                    clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+                    button: 0
+                };
+                element.dispatchEvent(new PointerEvent('pointerdown', {...base, buttons: 1, pointerType: 'mouse', isPrimary: true}));
+                element.dispatchEvent(new MouseEvent('mousedown', {...base, buttons: 1}));
+                element.dispatchEvent(new PointerEvent('pointerup', {...base, buttons: 0, pointerType: 'mouse', isPrimary: true}));
+                element.dispatchEvent(new MouseEvent('mouseup', {...base, buttons: 0}));
+            }, 50);
         };
+
+        // 副本重建前的安全闸。三件事都不能重建：
+        // ① 弹层开着（锚点消失会让弹层跳位或关闭）；② 焦点在回答内（用户可能正在用键盘操作）；
+        // ③ 用户正在原节点上操作（按下与抬起之间重建会让这次点击丢失）。
+        /** @param {HTMLElement | null} turn */
+        const hasOpenPopupOutside = (turn) => {
+            if (!turn || !turn.isConnected) return false;
+            for (const trigger of turn.querySelectorAll('[aria-expanded="true"][aria-controls]')) {
+                const id = trigger.getAttribute('aria-controls');
+                if (!id) continue;
+                const popup = document.getElementById(id);
+                if (popup && !turn.contains(popup)) return true;
+            }
+            return false;
+        };
+
+        // 是否处于「键盘操作」上下文：不依赖 :focus-visible 对脚本 focus() 的继承规则
+        // （那是浏览器实现细节，实测不确定，可能让副本永远建不回来）。
+        let keyboardIntentUntil = 0;
+        document.addEventListener('pointerdown', () => { keyboardIntentUntil = 0; }, {capture: true, passive: true});
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Tab' || event.key === 'Enter' || event.key === ' '
+                || event.key.startsWith('Arrow')) {
+                keyboardIntentUntil = performance.now() + 1500;
+            }
+        }, {capture: true, passive: true});
+
+        /** @param {HTMLElement | null} turn */
+        const canShieldNow = (turn) => {
+            if (performance.now() < shieldAllowedAt) return false;
+            if (hasOpenPopupOutside(turn)) return false;
+            if (performance.now() < keyboardIntentUntil
+                && turn && turn.isConnected && turn.contains(document.activeElement)) return false;
+            return true;
+        };
+
+        // 用户在「已放出的回答」上继续操作时，持续续期，避免到 10 秒被打断。
+        document.addEventListener('pointerdown', (event) => {
+            if (!(event.target instanceof Node)) return;
+            if (releasedTurn && releasedTurn.isConnected && releasedTurn.contains(event.target)) {
+                shieldAllowedAt = Math.max(shieldAllowedAt, performance.now() + 10000);
+            }
+        }, {capture: true, passive: true});
 
         /** @param {HTMLElement} turn */
         const shieldTurn = (turn) => {
             if (!turn.isConnected) return;
+            // 先判断再克隆：否则 iframe 会先被克隆触发重新加载，随后才被撤销。
+            if (hasUncloneableContent(turn)) return;
             if (shieldState?.turn === turn && shieldState.clone.isConnected) return;
             unshieldTurn();
             const parent = turn.parentElement;
@@ -984,8 +1045,25 @@
                 element.removeAttribute('data-testid');
             }
             remapCloneIds(clone);
+            // 重建时若焦点在回答内，按子节点索引把焦点交给副本，避免焦点掉到 BODY
+            // （键盘用户 Tab 后停顿、或鼠标转发后焦点留在原节点都会触发）。
+            /** @type {number[] | null} */
+            let focusPath = null;
+            const focused = document.activeElement;
+            if (focused instanceof HTMLElement && focused !== turn && turn.contains(focused)) {
+                focusPath = [];
+                for (let node = /** @type {HTMLElement | null} */ (focused); node && node !== turn; node = node.parentElement) {
+                    focusPath.unshift(Array.prototype.indexOf.call(node.parentElement?.children ?? [], node));
+                }
+            }
             parent.insertBefore(clone, turn.nextSibling);
             turn.style.setProperty('display', 'none', 'important');
+            if (focusPath) {
+                /** @type {Element | undefined} */
+                let mirror = clone;
+                for (const index of focusPath) mirror = mirror?.children[index];
+                if (mirror instanceof HTMLElement) mirror.focus({preventScroll: true});
+            }
             turn.dataset.lclShielded = '1';
             const cvCount = applyCloneBlockVisibility(clone);
             clone.dataset.lclCvBlocks = String(cvCount);
@@ -1002,10 +1080,32 @@
                 const target = event.target instanceof Element
                     ? event.target.closest(interactiveSelector)
                     : null;
-                if (!(target instanceof HTMLElement)) return;
+                // closest 可能越出副本命中外层祖先：那样点普通文字也会释放副本，必须拦住。
+                if (target instanceof HTMLElement && !clone.contains(target)) return;
+                if (!(target instanceof HTMLElement)) {
+                    // 无语义但看起来可点的元素（cursor:pointer）：至少把原节点放出来，由用户再点一次。
+                    const pointed = event.target instanceof Element
+                        && getComputedStyle(event.target).cursor === 'pointer';
+                    if (pointed && shieldState) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        shieldAllowedAt = Math.max(shieldAllowedAt, performance.now() + 10000);
+                        releasedTurn = shieldState.turn;
+                        unshieldTurn();
+                        displayCounters.forwardDropped += 1;
+                    }
+                    return;
+                }
                 if (target.tagName === 'A') {
                     const href = target.getAttribute('href');
-                    if (href && !href.startsWith('#')) return;
+                    // 同源链接交给页面自身处理（原地导航），外链/带协议才放行。
+                    if (href && !href.startsWith('#')) {
+                        let sameOrigin = false;
+                        try {
+                            sameOrigin = new URL(href, location.href).origin === location.origin;
+                        } catch { sameOrigin = false; }
+                        if (!sameOrigin) return;
+                    }
                 }
                 const activeState = shieldState;
                 if (!activeState) return;
@@ -1016,31 +1116,48 @@
                 // 成功失败都压制重建：否则放出原节点后可能立刻又被隐藏，「再点一次」就不成立。
                 shieldAllowedAt = Math.max(shieldAllowedAt, performance.now() + 10000);
 
+                releasedTurn = originalTurn;
                 const first = resolveOriginalNode(twinClone, originalTurn, target);
                 unshieldTurn();
                 if (first && first.isConnected) {
+                    displayCounters.forwardFirst += 1;
                     activateElement(first);
                     return;
                 }
 
-                // 兜底：隐藏期懒渲染收缩会让内容暂时缺失，放出后等两帧再定位一次。
-                // 期间一旦用户自己动手（pointerdown/keydown），立刻取消，避免重复激活。
+                // 兜底：隐藏期懒渲染收缩会让内容暂时缺失，放出后再定位。
+                // 三条硬约束：① 用户一动手就取消；② 标签页隐藏时暂停（rAF 在后台被节流，
+                // 切回来会先于用户的 pointerdown 触发，可能替他点下去）；③ 最多等 400ms，
+                // 超过就放弃，避免「很久之后突然点一下」。
                 let cancelled = false;
                 const cancelRetry = () => { cancelled = true; };
-                document.addEventListener('pointerdown', cancelRetry, {capture: true, once: true});
-                document.addEventListener('keydown', cancelRetry, {capture: true, once: true});
-                requestAnimationFrame(() => requestAnimationFrame(() => {
+                const cleanupRetry = () => {
                     document.removeEventListener('pointerdown', cancelRetry, true);
                     document.removeEventListener('keydown', cancelRetry, true);
-                    if (cancelled) return;
+                };
+                document.addEventListener('pointerdown', cancelRetry, {capture: true, once: true});
+                document.addEventListener('keydown', cancelRetry, {capture: true, once: true});
+                const retryDeadline = performance.now() + 400;
+                const retryTick = () => {
+                    if (cancelled || document.hidden || performance.now() > retryDeadline) {
+                        cleanupRetry();
+                        if (!cancelled) displayCounters.forwardDropped += 1;
+                        return;
+                    }
                     // 原节点可能已被 React 整棵替换：退回到当前最后一条回答再试。
                     const liveTurn = originalTurn.isConnected
                         ? originalTurn
                         : (getAssistantTurns().slice(-1)[0] ?? null);
                     const retry = resolveOriginalNode(twinClone, liveTurn, target);
-                    // 定位不到就什么都不点：原节点已可见，用户自己再点一次必然生效。
-                    if (retry) activateElement(retry);
-                }));
+                    if (retry) {
+                        cleanupRetry();
+                        displayCounters.forwardRetry += 1;
+                        activateElement(retry);
+                        return;
+                    }
+                    requestAnimationFrame(retryTick);
+                };
+                requestAnimationFrame(retryTick);
             }, true);
             shieldState = {turn, clone, signature, turnHeight, displayValue, displayPriority};
             displayCounters.shield += 1;
@@ -1317,7 +1434,7 @@
                 if (!adoptShieldToLatest(latest)) {
                     // React 替换了最新回答节点：立刻重建孪生，不要留下 1.5～3 秒的无优化窗口。
                     unshieldTurn();
-                    if (performance.now() >= shieldAllowedAt) shieldTurn(latest);
+                    if (canShieldNow(latest)) shieldTurn(latest);
                 }
             }
             if (hasUncloneableContent(latest)) {
@@ -1327,7 +1444,7 @@
                 updateUi();
                 return;
             }
-            if (!shieldState && performance.now() >= shieldAllowedAt) shieldTurn(latest);
+            if (!shieldState && canShieldNow(latest)) shieldTurn(latest);
             if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
             updateUi();
         };
@@ -1560,7 +1677,7 @@
             displayActivationError = '';
             // 非破坏式修复：只补建最新回答的副本，
             // 不 restoreAllParked()——那会在任意 5 秒边界把上万个节点的回答整层恢复，造成可感知的卡顿。
-            if (!stateful && performance.now() >= shieldAllowedAt) {
+            if (!stateful && canShieldNow(latest)) {
                 unshieldTurn();
                 shieldTurn(latest);
             }

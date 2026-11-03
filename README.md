@@ -35,6 +35,19 @@
 
 实测（同一会话、50 秒长回答）：流式期间状态切换 89 次 → 0 次；停止按钮消失到副本建立 360 ms（有收尾渲染时约 2.9 秒，与 0.6.0 持平）。输入/菜单/滚动 p95 与 0.6.0 差异均在 ±10% 内。
 
+## 0.6.3 更新：交互控件的健壮性
+
+0.6.2 把点击转发改成语义定位后，经外部代码审查找出若干实作缺陷，0.6.3 逐项修复：
+
+- **重建副本不再打断操作**：新增安全闸——冷却未结束、有外部弹层打开、或正在键盘操作时不重建。此前弹层开着的 10 秒后会重建，锚点消失导致弹层跳位/关闭；按下与抬起之间重建还会让点击丢失。
+- **交互控件覆盖补全**：`role=menuitemradio/menuitemcheckbox/option/treeitem/link` 等一并纳入；无语义但 `cursor:pointer` 的元素改为「只释放原节点、不转发」。
+- **不再有「开了又关」**：补发指针序列前的状态判断延迟到 50ms（React 18 离散更新在微任务提交，同步读会拿到旧值）。
+- **重试有上限**：rAF 轮询 + 400ms 截止 + 标签页隐藏时暂停，避免切回标签页时替你点下去。
+- **重建时焦点不丢**：此前焦点会被甩到 `BODY`，现在按子节点路径移交到副本。
+- 同源链接改为转发；含 `iframe/canvas/video/audio/embed/object` 的回答不再克隆；`input[type=hidden]` 不再阻止建副本。
+
+**验证**：逐项测试 0.6.3 **9/9**、0.6.2 **2/9**；真实页面 **4/4**、0.6.2 **2/4**；本地夹具 65/65；交互时延无退化（s1 160→152、s2 128→128、菜单 165→148.4 ms）。
+
 ## 0.6.2 更新：交互控件点击失效
 
 0.6.2 及更早版本把最新回答克隆成静态副本时，点击转发靠「子节点索引路径」从副本映射回原节点。真实页面上副本与原节点的 DOM 结构会随 React 重构而分叉，索引路径中途断裂，转发静默失败——表现为**按钮过一阵子就点不动，刷新又好了**。
@@ -170,6 +183,19 @@ The script is on by default and no longer waits for a conversation to reach a ce
 
 - **Fixed broken button controls**: fixes button controls in ChatGPT answers that were broken by the script. When the latest answer contains ChatGPT pressable citations, span[role="button"], inputs, textareas, or selects, the script keeps the original node instead of building a static twin, preserving React event handlers and popovers.
 - **Ordinary links still work**: answers without those controls still use the static twin; normal a href links keep their full URLs.
+
+### What's new in 0.6.3
+
+Robustness fixes for the click forwarding introduced in 0.6.2:
+
+- **Rebuilding the twin no longer interrupts you**: rebuild is gated on cooldown, open popups and active keyboard use. Previously a popup opened at second 0 lost its anchor at second 10, and a rebuild between pointerdown and pointerup swallowed the click.
+- **Broader interactive coverage**: `role=menuitemradio/menuitemcheckbox/option/treeitem/link` and friends; elements with no role but `cursor:pointer` now release the original instead of being silently swallowed.
+- **No more "opens then closes"**: the state check before re-dispatching pointer events is deferred by 50 ms, because React 18 commits discrete updates in a microtask.
+- **Bounded retry**: rAF polling with a 400 ms deadline, paused while the tab is hidden.
+- **Focus is preserved on rebuild** instead of falling back to `BODY`.
+- Same-origin links are forwarded; answers containing `iframe/canvas/video/audio/embed/object` are no longer cloned; `input[type=hidden]` no longer blocks cloning.
+
+Verified: per-item tests 9/9 on 0.6.3 vs 2/9 on 0.6.2; real-page 4/4 vs 2/4; 65/65 fixtures; no latency regression.
 
 ### What's new in 0.6.2
 
