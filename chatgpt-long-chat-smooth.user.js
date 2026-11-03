@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.6.4
+// @version      0.6.5
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.6.4';
+        const version = '0.6.5';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
@@ -475,7 +475,8 @@
                         activeObserverStates: observerStates.size,
                         healthMisses: displayHealthMisses,
                         observedMainConnected: Boolean(displayObservedMain?.isConnected),
-                        displayObserverAttached: Boolean(displayObserver)
+                        displayObserverAttached: Boolean(displayObserver),
+                        counters: {...displayCounters}
                     }), maintainParking: () => maintainParking()}
                 });
             }
@@ -727,6 +728,7 @@
 
         // 含「复制后必然失效」内容的回答不建静态副本：
         // - 输入控件：副本里打不了字；
+        // - 拖曳型控件：副本没有 React 事件绑定，拖拽无法靠 click 转发；
         // - iframe/canvas/video：克隆会重新加载 / 变空白 / 点击失效。
         // 引用角标 span[role=button] 不属于这一类：点击时语义定位后转发，弹层位置正确。
         // 并入同一入口（而非新增判断），刷新与健康检查会自动保持一致。
@@ -734,6 +736,7 @@
         const hasUncloneableContent = (turn) => Boolean(turn.querySelector(
             'input:not([type="hidden"]), textarea, select,'
             + ' [contenteditable]:not([contenteditable="false"]),'
+            + ' [role="slider"], [role="spinbutton"], [role="scrollbar"], [draggable="true"],'
             + ' iframe, canvas, video, audio, embed, object'));
 
         // 停车阈值要判断整条会话的规模；全树计数是 16k 级数组，不能每次刷新或定时重算。
@@ -1090,6 +1093,23 @@
                 clone.style.setProperty('margin-bottom', (marginBottom - delta).toFixed(2) + 'px', 'important');
             };
             adjustCloneHeight();
+            // 拖曳型控件无法用选择器穷举（例如纯 SVG/div 手柄）：副本收到 pointerdown 且目标呈
+            // 可拖曳光标时，立刻放出原节点，由用户重新拖一次。与 cursor:pointer 的点击补救同一思路。
+            clone.addEventListener('pointerdown', (event) => {
+                if (!shieldState || shieldState.clone !== clone) return;
+                if (event.button !== 0 || event.isPrimary === false) return;
+                const target = event.target instanceof Element ? event.target : null;
+                if (!target || !clone.contains(target)) return;
+                const cursor = getComputedStyle(target).cursor;
+                if (cursor !== 'grab' && cursor !== 'grabbing'
+                    && cursor !== 'ew-resize' && cursor !== 'col-resize') return;
+                event.preventDefault();
+                event.stopPropagation();
+                shieldAllowedAt = Math.max(shieldAllowedAt, performance.now() + 10000);
+                releasedTurn = shieldState?.turn ?? null;
+                unshieldTurn();
+                displayCounters.forwardDropped += 1;
+            });
             clone.addEventListener('click', (event) => {
                 const target = event.target instanceof Element
                     ? event.target.closest(interactiveSelector)
@@ -1465,7 +1485,7 @@
                 }
             }
             if (hasUncloneableContent(latest)) {
-                // 回答内部有可输入的控件：保留原节点，不能克隆。
+                // 回答内部有可输入/可拖曳的控件：保留原节点，不能克隆。
                 unshieldTurn();
                 if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
                 updateUi();

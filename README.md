@@ -35,6 +35,14 @@
 
 实测（同一会话、50 秒长回答）：流式期间状态切换 89 次 → 0 次；停止按钮消失到副本建立 360 ms（有收尾渲染时约 2.9 秒，与 0.6.0 持平）。输入/菜单/滚动 p95 与 0.6.0 差异均在 ±10% 内。
 
+## 0.6.5 更新：交互式回答里的滑杆拖不动
+
+**效果**：ChatGPT「学习模式」这类交互式回答里，会有「调整观察时间 t₀」这类滑杆。以前拖动完全没反应、数值一直停在 1.50；0.6.5 起可以正常拖动，曲线和三个实验的数值实时跟着更新。
+
+**原因**：脚本为了减少长会话卡顿，会把最新回答做成一份静态副本显示。副本没有网页的事件绑定——按钮类控件还能转接到原节点，拖拽类不行。滑杆在副本里，自然拖不动。
+
+**技术细节**：含 `[role="slider"]`、`[role="spinbutton"]`、`[role="scrollbar"]`、`[draggable="true"]` 的回答不再建立副本，保留原节点；副本收到 `pointerdown` 且光标为 `grab` 类时立刻放出原节点兜底（用户重新拖一次即可）。回归 65/65，滑块专项 16/16，三轮交错延迟对比无退化。
+
 ## 0.6.4 更新：专注模式修复
 
 交互回答专注模式（焦点进入回答内输入框时收起其它回答、隐藏静态副本，让按键重算只覆盖正在编辑的那条）此前**只有第一次进入有效**，第二次起静默失效。0.6.4 修复：
@@ -195,6 +203,14 @@ The script is on by default and no longer waits for a conversation to reach a ce
 
 - **Fixed broken button controls**: fixes button controls in ChatGPT answers that were broken by the script. When the latest answer contains ChatGPT pressable citations, span[role="button"], inputs, textareas, or selects, the script keeps the original node instead of building a static twin, preserving React event handlers and popovers.
 - **Ordinary links still work**: answers without those controls still use the static twin; normal a href links keep their full URLs.
+
+### What's new in 0.6.5
+
+**What you'll notice**: interactive answers such as the "learning mode" lessons sometimes contain drag sliders (for example "adjust observation time t0"). They used to be completely unresponsive, with the value stuck at 1.50. From 0.6.5 they drag normally and the curves and per-experiment values update live.
+
+**Why it happened**: to keep long conversations fast, the script displays the latest answer as a static clone. Clones have no page event handlers; click-like controls can be forwarded to the original node, but drag gestures cannot, so the slider was dead.
+
+**Technical details**: answers containing `[role="slider"]`, `[role="spinbutton"]`, `[role="scrollbar"]` or `[draggable="true"]` no longer get a clone and keep the original node. As a fallback, a clone releases the original node on `pointerdown` when the target shows a grab-style cursor. Verification: 65/65 regression, 16/16 slider probe, three interleaved latency rounds show no regression.
 
 ### What's new in 0.6.4
 
