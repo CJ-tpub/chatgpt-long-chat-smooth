@@ -35,6 +35,18 @@
 
 实测（同一会话、50 秒长回答）：流式期间状态切换 89 次 → 0 次；停止按钮消失到副本建立 360 ms（有收尾渲染时约 2.9 秒，与 0.6.0 持平）。输入/菜单/滚动 p95 与 0.6.0 差异均在 ±10% 内。
 
+## 0.6.4 更新：专注模式修复
+
+交互回答专注模式（焦点进入回答内输入框时收起其它回答、隐藏静态副本，让按键重算只覆盖正在编辑的那条）此前**只有第一次进入有效**，第二次起静默失效。0.6.4 修复：
+
+- 不再把「已隐藏」记在 DOM 属性上（该属性跨进出残留），改为记住被隐藏的元素；
+- 退出时**不论副本是否还在 DOM 上都会恢复**——此前副本脱离 DOM 时会被跳过，之后被插回时带着 `display:none`，**最新回答整条空白**；
+- 专注期间副本被重建时会重新隐藏（放在高度补偿之后，避免补偿成一整条回答的高度）；
+- 最新回答在专注中被收起时，建副本前先放出——否则克隆会继承 `display:none`，同样导致永久空白；
+- 用户消息的编辑框不再触发整页收起；嵌套结构下不会误收起焦点所在的回答。
+
+**验证**：专注模式专项 0.6.4 PASS / 0.6.3 FAIL；**真实 chatgpt.com 页面 + 真鼠标/真键盘：专注模式 9/9（0.6.3 为 6/9，第 2、3 次进入失败），点击转发 4/4**；夹具 65/65、逐项测试 9/9 不回退；交互时延无退化（s1 168→168、s2 144→144、菜单 166.8→167.3 ms）。
+
 ## 0.6.3 更新：交互控件的健壮性
 
 0.6.2 把点击转发改成语义定位后，经外部代码审查找出若干实作缺陷，0.6.3 逐项修复：
@@ -183,6 +195,18 @@ The script is on by default and no longer waits for a conversation to reach a ce
 
 - **Fixed broken button controls**: fixes button controls in ChatGPT answers that were broken by the script. When the latest answer contains ChatGPT pressable citations, span[role="button"], inputs, textareas, or selects, the script keeps the original node instead of building a static twin, preserving React event handlers and popovers.
 - **Ordinary links still work**: answers without those controls still use the static twin; normal a href links keep their full URLs.
+
+### What's new in 0.6.4
+
+Focus mode used to work only on first entry. Fixed:
+
+- No longer records "hidden" on a DOM attribute that survives enter/exit; remembers the hidden element instead.
+- Restores the twin on exit even when it is detached from the DOM — previously it was skipped and later re-inserted with `display:none`, leaving the newest answer **permanently blank**.
+- Re-hides the twin if it is rebuilt during focus mode (after height compensation, so the compensating margin stays correct).
+- Releases the newest answer from parking before cloning it, so the clone does not inherit `display:none`.
+- Editing fields in user messages no longer collapse the whole page; nested structures no longer hide the answer you are editing.
+
+Verified on the real chatgpt.com page with a real mouse and keyboard: focus mode 9/9 (0.6.3 scores 6/9, failing on the 2nd and 3rd entry) and click forwarding 4/4.
 
 ### What's new in 0.6.3
 

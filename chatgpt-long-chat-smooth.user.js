@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.6.3
+// @version      0.6.4
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.6.3';
+        const version = '0.6.4';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
@@ -694,7 +694,11 @@
         let focusModeTurn = null;
         /** @type {{turn: HTMLElement, placeholder: HTMLElement, displayValue: string, displayPriority: string}[]} */
         let focusParked = [];
-        let focusTwinHidden = false;
+        // 记录「被专注模式隐藏的那个副本元素」本身，而不是布尔标志：
+        // 副本在退出瞬间可能已脱离 DOM，布尔标志会漏恢复，之后 repair 把它插回就带着
+        // display:none，最新回答会整条空白。
+        /** @type {HTMLElement | null} */
+        let focusHiddenTwin = null;
         let focusRestoreTimer = 0;
         // 输入期间让路：按键/合成输入后 300 ms 内跳过周期刷新，避免和用户输入抢主线程。
         let inputBusyUntil = 0;
@@ -1028,6 +1032,16 @@
             unshieldTurn();
             const parent = turn.parentElement;
             if (!parent) return;
+            // 若该回答正被专注模式收起，必须先放出来再克隆：
+            // 否则 cloneNode 会把收起时加的 display:none !important 一起复制给副本，
+            // 原节点与副本同时隐藏 → 这条回答永久空白。
+            const focusEntryIndex = focusParked.findIndex((entry) => entry.turn === turn);
+            if (focusEntryIndex >= 0) {
+                const [focusEntry] = focusParked.splice(focusEntryIndex, 1);
+                focusEntry.placeholder.remove();
+                if (focusEntry.displayValue) turn.style.setProperty('display', focusEntry.displayValue, focusEntry.displayPriority);
+                else turn.style.removeProperty('display');
+            }
             const displayValue = turn.style.getPropertyValue('display');
             const displayPriority = turn.style.getPropertyPriority('display');
             const turnHeight = turn.getBoundingClientRect().height;
@@ -1160,6 +1174,10 @@
                 requestAnimationFrame(retryTick);
             }, true);
             shieldState = {turn, clone, signature, turnHeight, displayValue, displayPriority};
+            // 专注模式期间副本被重建：新副本必须同样是隐藏的。
+            // 必须放在 adjustCloneHeight() 之后——先隐藏会让高度量成 0，
+            // margin-bottom 会被补偿一整个回答的高度，退出后留下大块空白。
+            if (focusModeTurn?.isConnected && !turn.contains(focusModeTurn)) hideTwinForFocus();
             displayCounters.shield += 1;
             updateUi();
         };
@@ -1280,10 +1298,19 @@
             return turn instanceof HTMLElement ? turn : null;
         };
 
+        // 专注模式下隐藏最新回答的静态副本；若副本已被换掉，重新记一次。
+        const hideTwinForFocus = () => {
+            const clone = shieldState?.clone;
+            if (!(clone instanceof HTMLElement)) return;
+            if (focusHiddenTwin === clone && clone.style.getPropertyValue('display') === 'none') return;
+            clone.style.setProperty('display', 'none', 'important');
+            focusHiddenTwin = clone;
+        };
+
         const exitFocusMode = () => {
             window.clearTimeout(focusRestoreTimer);
             focusRestoreTimer = 0;
-            if (!focusModeTurn && !focusParked.length && !focusTwinHidden) return;
+            if (!focusModeTurn && !focusParked.length && !focusHiddenTwin) return;
             for (const entry of focusParked) {
                 entry.placeholder.remove();
                 if (entry.turn.isConnected) {
@@ -1292,8 +1319,9 @@
                 }
             }
             focusParked = [];
-            if (focusTwinHidden && shieldState?.clone.isConnected) shieldState.clone.style.removeProperty('display');
-            focusTwinHidden = false;
+            // 不论副本此刻是否还在 DOM 上都要恢复：它可能马上被 repair 插回。
+            if (focusHiddenTwin) focusHiddenTwin.style.removeProperty('display');
+            focusHiddenTwin = null;
             focusModeTurn = null;
             displayCounters.focusExit += 1;
             updateUi();
@@ -1310,6 +1338,9 @@
             const scrollTop = scrollRoot instanceof Element ? scrollRoot.scrollTop : null;
             for (const other of getAssistantTurns()) {
                 if (other === turn || other === shieldState?.turn || parkedTurns.has(other)) continue;
+                // focusin 用 closest 取到的是最内层匹配，getAssistantTurns 返回最外层；
+                // 两者存在包含关系时若继续处理，会把焦点所在回答的祖先也收起来，导致输入框消失。
+                if (other.contains(turn) || turn.contains(other)) continue;
                 if (!other.isConnected || other.dataset.lclManual === '1') continue;
                 const rect = other.getBoundingClientRect();
                 if (rect.height < 40) continue;
@@ -1325,11 +1356,7 @@
                 });
                 other.style.setProperty('display', 'none', 'important');
             }
-            if (shieldState?.clone.isConnected && !shieldState.clone.dataset.lclFocusHidden) {
-                shieldState.clone.dataset.lclFocusHidden = '1';
-                shieldState.clone.style.setProperty('display', 'none', 'important');
-                focusTwinHidden = true;
-            }
+            hideTwinForFocus();
             if (scrollRoot instanceof Element && scrollTop !== null) scrollRoot.scrollTop = scrollTop;
             updateUi();
         };
@@ -1662,9 +1689,11 @@
                 return;
             }
             const stateful = hasUncloneableContent(latest);
+            const cloneVisible = Boolean(shieldState && shieldState.clone.style.getPropertyValue('display') !== 'none');
             const cloneHealthy = Boolean(displayEnabled && shieldState
                 && shieldState.turn === latest && shieldState.turn.isConnected
-                && shieldState.clone.isConnected && latest.dataset.lclShielded === '1');
+                && shieldState.clone.isConnected && latest.dataset.lclShielded === '1'
+                && (cloneVisible || focusHiddenTwin === shieldState.clone));
             const interactiveHealthy = Boolean(displayEnabled && stateful && !shieldState);
             if (cloneHealthy || interactiveHealthy) {
                 displayHealthMisses = 0;
@@ -1707,6 +1736,10 @@
             if (!isEditableElement(target)) return;
             const turn = target.closest(messageSelector);
             if (!(turn instanceof HTMLElement)) return;
+            // 只对「助手回答」生效：用户消息里点「编辑」也会出现输入框，
+            // 那时若把全部助手回答收起来会非常突兀。
+            if (!getAssistantTurns().some((assistant) => assistant === turn
+                || assistant.contains(turn) || turn.contains(assistant))) return;
             if (!displayEnabled || !totalEnabled || !layers.display || testDisplayDisabled) return;
             window.clearTimeout(focusRestoreTimer);
             focusRestoreTimer = 0;
