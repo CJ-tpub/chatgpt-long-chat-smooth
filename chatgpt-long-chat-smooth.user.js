@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.6.5
+// @version      0.6.7
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,13 +25,33 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.6.5';
+        const version = '0.6.7';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
+        const feedbackHostId = 'cgpt-long-chat-lite-feedback';
+        const feedbackStorageKey = 'cgpt-lcl:v1:feedback';
+        const feedbackLinks = {
+            greasyfork: 'https://greasyfork.org/zh-CN/scripts/601032/feedback',
+            github: 'https://github.com/CJ-tpub/chatgpt-long-chat-smooth/issues'
+        };
+        // 提示层规则：安装满 3 个自然日、累计可见使用 30 分钟、打开过 3 次页面；
+        // 未勾选「不再弹出」时 30 天后才允许再提示一次。
+        const feedbackRules = {
+            minDays: 3,
+            minActiveMs: 30 * 60 * 1000,
+            minOpens: 3,
+            cooldownMs: 30 * 24 * 60 * 60 * 1000,
+            tickMs: 30000,
+            persistMs: 5 * 60 * 1000,
+            checkDelayMs: 8000,
+            duplicateWindowMs: 10000
+        };
         const testUiEnabled = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
         const testDisplayQuery = new URLSearchParams(location.search);
         const testDisplayDisabled = testUiEnabled && testDisplayQuery.has('cgpt-lcl-no-display');
         const testDisplayEnabled = testUiEnabled && testDisplayQuery.has('display-test');
+        const feedbackTestEnabled = testUiEnabled && testDisplayQuery.has('feedback-test');
+        const feedbackForceTest = feedbackTestEnabled && testDisplayQuery.has('feedback-force');
         const marker = 'cgpt-long-chat-lite-history';
         const heightProperty = '--cgpt-long-chat-lite-height';
         const messageSelector = '[data-chatgpt-search-unit-key], [data-testid^="conversation-turn-"]';
@@ -467,7 +487,19 @@
             if (!Object.prototype.hasOwnProperty.call(window, '__cgptLongChatLiteTest')) {
                 Object.defineProperty(window, '__cgptLongChatLiteTest', {
                     configurable: true,
-                    value: {getDamperSnapshot, showFaultNotice, getDisplaySnapshot: () => ({
+                    value: {getDamperSnapshot, showFaultNotice,
+                        getFeedbackSnapshot: () => ({
+                            enabled: feedbackEnabled(),
+                            state: feedbackState
+                                ? {...feedbackState, days: [...feedbackState.days]}
+                                : null,
+                            host: Boolean(document.getElementById(feedbackHostId)),
+                            forced: feedbackForceTest,
+                            dismissed: feedbackDismissed
+                        }),
+                        showFeedback: () => showFeedbackDialog(),
+                        dismissFeedback: () => dismissFeedback(),
+                        getDisplaySnapshot: () => ({
                         enabled: displayEnabled,
                         attempts: displayActivationAttempts,
                         error: displayActivationError,
@@ -726,16 +758,22 @@
 
         const hasAssistantTurns = () => isChatGptHost() && getAssistantTurns().length > 0;
 
+        // 写作块：新版 ChatGPT 把回答正文渲染在可编辑的 ProseMirror 里。克隆时把它降级为
+        // 只读预览，用户点进去时再放出原节点，这样这类回答也能享受静态副本优化。
+        const writingBlockSelector = '.ProseMirror[contenteditable="true"][role="textbox"]';
+        const readOnlyBlockSelector = '[data-lcl-readonly]';
+
         // 含「复制后必然失效」内容的回答不建静态副本：
         // - 输入控件：副本里打不了字；
         // - 拖曳型控件：副本没有 React 事件绑定，拖拽无法靠 click 转发；
         // - iframe/canvas/video：克隆会重新加载 / 变空白 / 点击失效。
+        // 写作块是例外：降级成只读预览后可以安全克隆，点击时再放出原节点。
         // 引用角标 span[role=button] 不属于这一类：点击时语义定位后转发，弹层位置正确。
         // 并入同一入口（而非新增判断），刷新与健康检查会自动保持一致。
         /** @param {HTMLElement} turn @returns {boolean} */
         const hasUncloneableContent = (turn) => Boolean(turn.querySelector(
             'input:not([type="hidden"]), textarea, select,'
-            + ' [contenteditable]:not([contenteditable="false"]),'
+            + ' [contenteditable]:not([contenteditable="false"]):not(.ProseMirror[contenteditable="true"][role="textbox"]),'
             + ' [role="slider"], [role="spinbutton"], [role="scrollbar"], [draggable="true"],'
             + ' iframe, canvas, video, audio, embed, object'));
 
@@ -1009,9 +1047,78 @@
             }
         }, {capture: true, passive: true});
 
-        /** @param {HTMLElement | null} turn */
+        /** @param {HTMLElement | null} turn @returns {boolean} 焦点是否在该回答内的可编辑区。 */
+        const isEditingInside = (turn) => {
+            if (!turn) return false;
+            const active = document.activeElement;
+            return active instanceof HTMLElement && active !== turn && turn.contains(active)
+                && Boolean(active.closest('input, textarea, select, [contenteditable="true"]'));
+        };
+
+        /**
+         * 把副本里的写作块降级为只读预览，并记录序号供释放时反查。
+         * @param {HTMLElement} clone
+         */
+        const downgradeWritingBlocks = (clone) => {
+            const blocks = clone.querySelectorAll(writingBlockSelector);
+            let index = 0;
+            for (const block of blocks) {
+                block.removeAttribute('contenteditable');
+                block.removeAttribute('aria-multiline');
+                block.removeAttribute('aria-placeholder');
+                block.removeAttribute('spellcheck');
+                block.removeAttribute('autocorrect');
+                block.removeAttribute('autocapitalize');
+                block.removeAttribute('data-placeholder');
+                // 去掉 ProseMirror 的编辑态类，避免副本看起来可编辑。
+                block.classList.remove('ProseMirror-focused', 'ProseMirror-hideselection', 'ProseMirror-selectednode');
+                block.setAttribute('data-lcl-readonly', '1');
+                block.setAttribute('data-lcl-readonly-index', String(index++));
+                block.setAttribute('role', 'group');
+                block.setAttribute('aria-label', '写作块（只读预览，点击或按 Enter 进入编辑）');
+                block.setAttribute('tabindex', '0');
+            }
+        };
+
+        /**
+         * 放出原节点并把焦点交给对应的原编辑器。
+         * @param {HTMLElement} clone @param {Element} block @param {{x: number, y: number} | null} point
+         */
+        const releaseWritingBlock = (clone, block, point) => {
+            const activeState = shieldState;
+            if (!activeState || activeState.clone !== clone) return;
+            const index = Number(block.getAttribute('data-lcl-readonly-index') || 0);
+            const {turn} = activeState;
+            shieldAllowedAt = Math.max(shieldAllowedAt, performance.now() + 10000);
+            releasedTurn = turn;
+            unshieldTurn();
+            if (!turn.isConnected) return;
+            const editors = turn.querySelectorAll(writingBlockSelector);
+            /** @type {Element | undefined} */
+            let editor = editors[index];
+            if (!(editor instanceof HTMLElement)) {
+                // 原节点可能已被 React 替换：退回当前最后一条回答里的同序号写作块。
+                const liveTurn = getAssistantTurns().slice(-1)[0];
+                const fallback = liveTurn && liveTurn !== turn
+                    ? liveTurn.querySelectorAll(writingBlockSelector)[index]
+                    : undefined;
+                if (fallback instanceof HTMLElement) editor = fallback;
+            }
+            if (!(editor instanceof HTMLElement)) return;
+            editor.focus({preventScroll: true});
+            if (!point || typeof document.caretRangeFromPoint !== 'function') return;
+            const range = document.caretRangeFromPoint(point.x, point.y);
+            if (!range || !editor.contains(range.startContainer)) return;
+            const selection = window.getSelection();
+            if (!selection) return;
+            selection.removeAllRanges();
+            selection.addRange(range);
+        };
+
+        /** @param {HTMLElement | null} turn @returns {boolean} */
         const canShieldNow = (turn) => {
             if (performance.now() < shieldAllowedAt) return false;
+            if (isEditingInside(turn)) return false;
             if (hasOpenPopupOutside(turn)) return false;
             if (performance.now() < keyboardIntentUntil
                 && turn && turn.isConnected && turn.contains(document.activeElement)) return false;
@@ -1025,12 +1132,24 @@
                 shieldAllowedAt = Math.max(shieldAllowedAt, performance.now() + 10000);
             }
         }, {capture: true, passive: true});
+        // 键盘输入与焦点落在放出中的回答里也要续期：否则长文本写到一半，压制期一过就会被重新隐藏。
+        for (const type of ['keydown', 'input', 'focusin']) {
+            document.addEventListener(type, () => {
+                const active = document.activeElement;
+                if (releasedTurn && releasedTurn.isConnected && active instanceof Node
+                    && releasedTurn.contains(active)) {
+                    shieldAllowedAt = Math.max(shieldAllowedAt, performance.now() + 10000);
+                }
+            }, {capture: true, passive: true});
+        }
 
         /** @param {HTMLElement} turn */
         const shieldTurn = (turn) => {
             if (!turn.isConnected) return;
             // 先判断再克隆：否则 iframe 会先被克隆触发重新加载，随后才被撤销。
             if (hasUncloneableContent(turn)) return;
+            // 用户正在该回答里编写：保留原节点，避免把输入焦点和 IME 组字打断。
+            if (isEditingInside(turn)) return;
             if (shieldState?.turn === turn && shieldState.clone.isConnected) return;
             unshieldTurn();
             const parent = turn.parentElement;
@@ -1062,6 +1181,8 @@
                 element.removeAttribute('data-testid');
             }
             remapCloneIds(clone);
+            // 写作块在副本里只能当只读预览：保留文字与样式，去掉可编辑语义。
+            downgradeWritingBlocks(clone);
             // 重建时若焦点在回答内，按子节点索引把焦点交给副本，避免焦点掉到 BODY
             // （键盘用户 Tab 后停顿、或鼠标转发后焦点留在原节点都会触发）。
             /** @type {number[] | null} */
@@ -1110,6 +1231,44 @@
                 unshieldTurn();
                 displayCounters.forwardDropped += 1;
             });
+            // 写作块是只读预览：点击（且不在选字中）或键盘进入时放出原节点，由用户就地编辑。
+            clone.addEventListener('click', (event) => {
+                if (!shieldState || shieldState.clone !== clone) return;
+                const target = event.target instanceof Element ? event.target : null;
+                if (!target) return;
+                const block = target.closest(readOnlyBlockSelector);
+                if (!(block instanceof Element) || !clone.contains(block)) return;
+                // 双击/三击选字：第一击时选区还是折叠的，不能提前释放。
+                if (event.detail > 1) return;
+                // 块内的按钮/菜单项交给既有点击桥接，保持「点一次就生效」。
+                if (target.closest('button, [role="button"], summary')) return;
+                const selection = window.getSelection();
+                // 正在块内选字复制时不释放，交给浏览器原生选区。
+                if (selection && !selection.isCollapsed && selection.anchorNode instanceof Node
+                    && block.contains(selection.anchorNode)) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                releaseWritingBlock(clone, block, {x: event.clientX, y: event.clientY});
+            }, true);
+            clone.addEventListener('keydown', (event) => {
+                if (!shieldState || shieldState.clone !== clone) return;
+                const block = event.target instanceof Element
+                    ? event.target.closest(readOnlyBlockSelector)
+                    : null;
+                if (!(block instanceof Element) || !clone.contains(block)) return;
+                // IME 组字、退格/删除、粘贴/剪切、Enter/空格、可打印字符都视为进入编辑。
+                const editingKey = event.isComposing || event.keyCode === 229
+                    || event.key === 'Enter' || event.key === ' '
+                    || event.key === 'Backspace' || event.key === 'Delete'
+                    || ((event.ctrlKey || event.metaKey) && (event.key === 'v' || event.key === 'x'))
+                    || (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey);
+                if (!editingKey) return;
+                event.preventDefault();
+                event.stopPropagation();
+                releaseWritingBlock(clone, block, null);
+            }, true);
             clone.addEventListener('click', (event) => {
                 const target = event.target instanceof Element
                     ? event.target.closest(interactiveSelector)
@@ -1484,6 +1643,13 @@
                     if (canShieldNow(latest)) shieldTurn(latest);
                 }
             }
+            if (isEditingInside(latest)) {
+                // 用户正在回答里编写：先放出原节点，失焦后再重建副本。
+                unshieldTurn();
+                if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
+                updateUi();
+                return;
+            }
             if (hasUncloneableContent(latest)) {
                 // 回答内部有可输入/可拖曳的控件：保留原节点，不能克隆。
                 unshieldTurn();
@@ -1633,7 +1799,7 @@
                 const latest = assistants[assistants.length - 1];
                 if (!displayEnabled) throw new Error('轻量显示未进入启用状态');
                 if (latest && !isLatestGenerating(latest) && !hasUncloneableContent(latest)
-                    && !document.querySelector('[data-lcl-twin]')) {
+                    && !isEditingInside(latest) && !document.querySelector('[data-lcl-twin]')) {
                     throw new Error('最新助手回答静态副本未建立');
                 }
                 displayActivationAttempts = 0;
@@ -1708,7 +1874,7 @@
                 displayHealthMisses = 0;
                 return;
             }
-            const stateful = hasUncloneableContent(latest);
+            const stateful = hasUncloneableContent(latest) || isEditingInside(latest);
             const cloneVisible = Boolean(shieldState && shieldState.clone.style.getPropertyValue('display') !== 'none');
             const cloneHealthy = Boolean(displayEnabled && shieldState
                 && shieldState.turn === latest && shieldState.turn.isConnected
@@ -1770,6 +1936,307 @@
         }, true);
 
         window.addEventListener('scroll', onDisplayScroll, {capture: true, passive: true});
+
+        // ---- 0.6.6 使用反馈提示 -------------------------------------------------
+        // 全部判断与计数都在本地完成，不发任何网络请求；存储不可用时整个提示层静默。
+
+        /**
+         * @typedef {{firstSeenAt: number, activeMs: number, opens: number, days: string[],
+         *     shown: number, lastShownAt: number, optOut: boolean, lastVersion: string}} FeedbackState
+         */
+
+        /** @type {FeedbackState | null} */
+        let feedbackState = null;
+        let feedbackStorageWritable = false;
+        let feedbackActiveSince = 0;
+        let feedbackLastPersist = 0;
+        let feedbackTimer = 0;
+        let feedbackHostShown = false;
+        let feedbackDismissed = false;
+
+        /** @returns {FeedbackState} */
+        const createFeedbackState = () => ({
+            firstSeenAt: Date.now(),
+            activeMs: 0,
+            opens: 0,
+            days: [],
+            shown: 0,
+            lastShownAt: 0,
+            optOut: false,
+            lastVersion: ''
+        });
+
+        /** @param {Date} date @returns {string} */
+        const toFeedbackDayKey = (date) => {
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return date.getFullYear() + '-' + month + '-' + day;
+        };
+
+        /** @param {unknown} value @returns {value is Record<string, unknown>} */
+        const isFeedbackRecord = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+        /** 读取使用计数；存储不可用时返回 null（调用方据此关闭提示层）。 */
+        const loadFeedbackState = () => {
+            try {
+                const raw = localStorage.getItem(feedbackStorageKey);
+                feedbackStorageWritable = true;
+                if (raw === null) return createFeedbackState();
+                const parsed = JSON.parse(raw);
+                if (!isFeedbackRecord(parsed)) return createFeedbackState();
+                const state = createFeedbackState();
+                if (typeof parsed.firstSeenAt === 'number' && Number.isFinite(parsed.firstSeenAt) && parsed.firstSeenAt > 0) {
+                    state.firstSeenAt = parsed.firstSeenAt;
+                }
+                if (typeof parsed.activeMs === 'number' && Number.isFinite(parsed.activeMs) && parsed.activeMs >= 0) {
+                    state.activeMs = parsed.activeMs;
+                }
+                if (typeof parsed.opens === 'number' && Number.isFinite(parsed.opens) && parsed.opens >= 0) {
+                    state.opens = Math.floor(parsed.opens);
+                }
+                if (Array.isArray(parsed.days)) {
+                    state.days = parsed.days
+                        .filter((item) => typeof item === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item))
+                        .slice(-60);
+                }
+                if (typeof parsed.shown === 'number' && Number.isFinite(parsed.shown) && parsed.shown >= 0) {
+                    state.shown = Math.floor(parsed.shown);
+                }
+                if (typeof parsed.lastShownAt === 'number' && Number.isFinite(parsed.lastShownAt) && parsed.lastShownAt > 0) {
+                    state.lastShownAt = parsed.lastShownAt;
+                }
+                state.optOut = parsed.optOut === true;
+                if (typeof parsed.lastVersion === 'string') state.lastVersion = parsed.lastVersion.slice(0, 24);
+                return state;
+            } catch {
+                feedbackStorageWritable = false;
+                return null;
+            }
+        };
+
+        /** @param {FeedbackState} state @returns {boolean} */
+        const saveFeedbackState = (state) => {
+            try {
+                localStorage.setItem(feedbackStorageKey, JSON.stringify(state));
+                feedbackStorageWritable = true;
+                return true;
+            } catch {
+                feedbackStorageWritable = false;
+                return false;
+            }
+        };
+
+        /** 首次进入时登记：打开次数 +1、记录当天日期。重复调用幂等。 */
+        const initFeedbackState = () => {
+            if (feedbackState) return feedbackState;
+            const loaded = loadFeedbackState();
+            if (!loaded) return null;
+            feedbackState = loaded;
+            feedbackState.opens += 1;
+            const dayKey = toFeedbackDayKey(new Date());
+            if (!feedbackState.days.includes(dayKey)) {
+                feedbackState.days.push(dayKey);
+                if (feedbackState.days.length > 60) feedbackState.days = feedbackState.days.slice(-60);
+            }
+            saveFeedbackState(feedbackState);
+            return feedbackState;
+        };
+
+        const isFeedbackPageVisible = () => document.visibilityState !== 'hidden';
+
+        /**
+         * 结算自上次记账以来的可见时长，并重新起算。
+         * @param {number} now
+         */
+        const accumulateFeedbackTime = (now) => {
+            if (!feedbackState) return;
+            if (feedbackActiveSince > 0 && now > feedbackActiveSince) {
+                feedbackState.activeMs += now - feedbackActiveSince;
+            }
+            feedbackActiveSince = isFeedbackPageVisible() ? now : 0;
+        };
+
+        /** @param {boolean} force */
+        const persistFeedbackUsage = (force) => {
+            if (!feedbackState) return;
+            const now = performance.now();
+            if (!force && now - feedbackLastPersist < feedbackRules.persistMs) return;
+            feedbackLastPersist = now;
+            saveFeedbackState(feedbackState);
+        };
+
+        /** 提示层是否在当前页面生效：真实 chatgpt.com，或本地回归参数。 */
+        const feedbackEnabled = () => isChatGptHost() || feedbackTestEnabled;
+
+        /** @returns {boolean} */
+        const shouldShowFeedback = () => {
+            if (!feedbackState || feedbackHostShown || feedbackDismissed) return false;
+            if (!feedbackEnabled() || !feedbackStorageWritable) return false;
+            if (feedbackState.optOut) return false;
+            if (feedbackForceTest) return true;
+            const now = Date.now();
+            if (feedbackState.lastShownAt > 0 && now - feedbackState.lastShownAt < feedbackRules.cooldownMs) return false;
+            if (feedbackState.opens < feedbackRules.minOpens) return false;
+            const days = new Set(feedbackState.days);
+            days.add(toFeedbackDayKey(new Date(now)));
+            if (days.size < feedbackRules.minDays) return false;
+            return feedbackState.activeMs >= feedbackRules.minActiveMs;
+        };
+
+        const dismissFeedback = () => {
+            const host = document.getElementById(feedbackHostId);
+            const checkbox = host?.shadowRoot?.querySelector('input[type="checkbox"]');
+            if (feedbackState) {
+                if (checkbox instanceof HTMLInputElement) feedbackState.optOut = checkbox.checked;
+                feedbackState.lastShownAt = Date.now();
+                feedbackState.lastVersion = version;
+                saveFeedbackState(feedbackState);
+            }
+            feedbackDismissed = true;
+            feedbackHostShown = false;
+            if (host) host.remove();
+        };
+
+        const showFeedbackDialog = () => {
+            const state = feedbackState;
+            if (!state || feedbackHostShown) return;
+            if (document.getElementById(feedbackHostId)) return;
+            feedbackHostShown = true;
+            state.shown += 1;
+            state.lastShownAt = Date.now();
+            state.lastVersion = version;
+            // 先落盘再插 DOM：写入失败就放弃，避免存储异常时每次刷新都弹。
+            if (!saveFeedbackState(state)) {
+                feedbackHostShown = false;
+                return;
+            }
+            const host = document.createElement('div');
+            host.id = feedbackHostId;
+            const shadow = host.attachShadow({mode: 'open'});
+            const style = document.createElement('style');
+            style.textContent = ':host { position:fixed; top:64px; right:14px; z-index:2147483000;'
+                + ' width:min(320px, calc(100vw - 28px)); color-scheme:light dark;'
+                + ' font:13px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif; }\n'
+                + '.box { display:flex; flex-direction:column; gap:9px; padding:12px 13px;'
+                + ' border:1px solid #7aa7ff; border-radius:10px; background:Canvas; color:CanvasText;'
+                + ' box-shadow:0 4px 18px #0003; }\n'
+                + '.head { display:flex; align-items:flex-start; gap:8px; }\n'
+                + '.head strong { flex:1; font-size:13px; line-height:1.4; }\n'
+                + '.close { flex:none; padding:0 4px; border:0; background:transparent; color:inherit;'
+                + ' font:inherit; font-size:16px; line-height:1; cursor:pointer; opacity:.65; }\n'
+                + '.close:hover { opacity:1; }\n'
+                + '.body { margin:0; opacity:.85; }\n'
+                + '.links { display:flex; flex-wrap:wrap; gap:6px; }\n'
+                + '.link { flex:1 1 120px; padding:6px 8px; border:1px solid #7aa7ff; border-radius:6px;'
+                + ' text-align:center; text-decoration:none; color:CanvasText; background:transparent; }\n'
+                + '.link.primary { border-color:transparent; background:#3b82f6; color:#fff; }\n'
+                + '.link:hover { filter:brightness(1.06); }\n'
+                + '.opt { display:flex; align-items:flex-start; gap:6px; opacity:.85; cursor:pointer; }\n'
+                + '.opt input { margin:2px 0 0; }\n'
+                + '.foot { opacity:.5; font-size:11px; }\n'
+                + '@media (max-width:480px) { :host { left:8px; right:8px; width:auto; top:56px; } }\n'
+                + '@media print { :host { display:none; } }';
+
+            const box = document.createElement('div');
+            box.className = 'box';
+            box.setAttribute('role', 'dialog');
+            box.setAttribute('aria-label', '使用反馈');
+
+            const head = document.createElement('div');
+            head.className = 'head';
+            const title = document.createElement('strong');
+            title.textContent = '用了一段时间，给点反馈？';
+            const close = document.createElement('button');
+            close.type = 'button';
+            close.className = 'close';
+            close.setAttribute('aria-label', '关闭反馈窗口');
+            close.textContent = '×';
+            head.append(title, close);
+
+            const body = document.createElement('p');
+            body.className = 'body';
+            body.textContent = '如果它让长对话顺了一点，或者你还卡在什么地方，欢迎留一句反馈。';
+
+            const links = document.createElement('div');
+            links.className = 'links';
+            const greasyforkLink = document.createElement('a');
+            greasyforkLink.className = 'link primary';
+            greasyforkLink.href = feedbackLinks.greasyfork;
+            greasyforkLink.target = '_blank';
+            greasyforkLink.rel = 'noopener noreferrer';
+            greasyforkLink.textContent = 'Greasy Fork 反馈';
+            const githubLink = document.createElement('a');
+            githubLink.className = 'link';
+            githubLink.href = feedbackLinks.github;
+            githubLink.target = '_blank';
+            githubLink.rel = 'noopener noreferrer';
+            githubLink.textContent = 'GitHub 提 Issue';
+            links.append(greasyforkLink, githubLink);
+
+            const option = document.createElement('label');
+            option.className = 'opt';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = state.optOut;
+            const optionText = document.createElement('span');
+            optionText.textContent = '不再弹出（脚本更新后也不再提示）';
+            option.append(checkbox, optionText);
+
+            const foot = document.createElement('div');
+            foot.className = 'foot';
+            foot.textContent = 'v' + version;
+
+            // 勾选即落盘：避免用户勾完直接关标签页，导致「不再弹出」没被记住。
+            checkbox.addEventListener('change', () => {
+                if (!feedbackState) return;
+                feedbackState.optOut = checkbox.checked;
+                saveFeedbackState(feedbackState);
+            });
+            close.addEventListener('click', dismissFeedback);
+            box.addEventListener('keydown', (event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                event.stopPropagation();
+                dismissFeedback();
+            });
+
+            box.append(head, body, links, option, foot);
+            shadow.append(style, box);
+            (document.body || document.documentElement).append(host);
+        };
+
+        const maybeShowFeedback = () => {
+            if (!feedbackState || !feedbackEnabled()) return;
+            accumulateFeedbackTime(performance.now());
+            if (!shouldShowFeedback()) return;
+            // 多个标签可能同时到达阈值：展示前重读一次，10 秒内已展示过就放弃。
+            const latest = loadFeedbackState();
+            if (latest && latest.lastShownAt > 0
+                && Date.now() - latest.lastShownAt < feedbackRules.duplicateWindowMs) {
+                return;
+            }
+            showFeedbackDialog();
+        };
+
+        const feedbackTick = () => {
+            if (!feedbackState) return;
+            accumulateFeedbackTime(performance.now());
+            persistFeedbackUsage(false);
+            maybeShowFeedback();
+        };
+
+        const handleFeedbackVisibility = () => {
+            if (!feedbackState) return;
+            accumulateFeedbackTime(performance.now());
+            if (isFeedbackPageVisible()) maybeShowFeedback();
+            else persistFeedbackUsage(true);
+        };
+
+        const handleFeedbackPageHide = () => {
+            if (!feedbackState) return;
+            accumulateFeedbackTime(performance.now());
+            persistFeedbackUsage(true);
+        };
 
         const startUi = () => {
             if (uiStarted || document.getElementById(panelId)) return;
@@ -2080,6 +2547,17 @@
                 }
             }, 12000);
             updateUi();
+            // 0.6.6：使用一段时间后给一次反馈提示；只做本地计数，不发网络请求。
+            if (!feedbackTimer) {
+                initFeedbackState();
+                if (feedbackState) {
+                    feedbackActiveSince = isFeedbackPageVisible() ? performance.now() : 0;
+                    feedbackTimer = window.setInterval(feedbackTick, feedbackRules.tickMs);
+                    document.addEventListener('visibilitychange', handleFeedbackVisibility);
+                    window.addEventListener('pagehide', handleFeedbackPageHide);
+                    window.setTimeout(maybeShowFeedback, feedbackRules.checkDelayMs);
+                }
+            }
         };
 
         const boot = () => {
