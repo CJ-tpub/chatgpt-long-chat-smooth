@@ -2,7 +2,7 @@
 // @name         ChatGPT 网页长对话交互卡顿优化
 // @name:en      ChatGPT Web Long Chat Interaction Optimizer
 // @namespace    https://github.com/CJ-tpub/chatgpt-long-chat-smooth
-// @version      0.6.7
+// @version      0.6.9
 // @description  优化 ChatGPT 网页长对话/长会话的输入、点击和滚动交互，减少卡顿，让操作更顺滑。
 // @description:en Optimize typing, clicking and scrolling interactions in long ChatGPT web conversations by reducing lag.
 // @homepageURL  https://github.com/CJ-tpub/chatgpt-long-chat-smooth
@@ -25,7 +25,7 @@
     if (topWindow && !Object.prototype.hasOwnProperty.call(window, instanceKey)) {
         // 防止重复加载时叠加多个全局观察器代理和状态集合。
         Object.defineProperty(window, instanceKey, {configurable: false, value: true});
-        const version = '0.6.7';
+        const version = '0.6.9';
         const panelId = 'cgpt-long-chat-lite-panel';
         const noticeId = 'cgpt-long-chat-lite-notice';
         const feedbackHostId = 'cgpt-long-chat-lite-feedback';
@@ -54,7 +54,8 @@
         const feedbackForceTest = feedbackTestEnabled && testDisplayQuery.has('feedback-force');
         const marker = 'cgpt-long-chat-lite-history';
         const heightProperty = '--cgpt-long-chat-lite-height';
-        const messageSelector = '[data-chatgpt-search-unit-key], [data-testid^="conversation-turn-"]';
+        const messageSelector = '[data-chatgpt-search-unit-key], [data-chatgpt-search-message-ids],'
+            + ' [data-message-author-role], [data-testid^="conversation-turn-"]';
         const recentCount = 4;
         const layerStorageKey = 'cgpt-lcl:v3:layers';
 
@@ -678,7 +679,7 @@
         renderStyle.textContent = 'main .' + marker + ' { content-visibility:auto !important;'
             + ' contain-intrinsic-block-size:auto var(' + heightProperty + ', 600px) !important; }\n'
             + 'main .' + marker + ':hover, main .' + marker + ':focus-within,\n'
-            + 'main .' + marker + ':has([contenteditable="true"]),\n'
+            + 'main .' + marker + ':has([contenteditable="true"]:not(.ProseMirror[contenteditable="true"][role="textbox"])),\n'
             + 'main .' + marker + ':has([aria-expanded="true"]),\n'
             + 'main .' + marker + ':has([role="dialog"]), main .' + marker + ':has([role="menu"]) { content-visibility:visible !important; }\n'
             + '@media print { main .' + marker + ' { content-visibility:visible !important; } }';
@@ -689,7 +690,7 @@
 
         // 轻量显示：旧回答泊车 + 最新回答静态孪生 + 块级延迟渲染。
         // 只在真实 ChatGPT 页面启用；本地普通夹具不会触发，显示层专项夹具会显式开启。
-        /** @type {{turn: HTMLElement, clone: HTMLElement, signature: number, turnHeight: number, displayValue: string, displayPriority: string} | null} */
+        /** @type {{turn: HTMLElement, clone: HTMLElement, signature: number, turnHeight: number, displayValue: string, displayPriority: string, messageId: string} | null} */
         let shieldState = null;
         /** @type {Map<HTMLElement, {placeholder: HTMLElement, observer: IntersectionObserver | null, displayValue: string, displayPriority: string}>} */
         const parkedTurns = new Map();
@@ -744,7 +745,7 @@
             shield: 0, unshield: 0, park: 0, unpark: 0, refresh: 0, reattach: 0,
             contentUnshield: 0, focusEnter: 0, focusExit: 0,
             // 点击转发观测：主路径成功 / 兜底重试成功 / 最终丢弃（不点击）
-            forwardFirst: 0, forwardRetry: 0, forwardDropped: 0
+            forwardFirst: 0, forwardRetry: 0, forwardDropped: 0, forwardRelease: 0
         };
         // 最近一次被「放出来」让用户操作的回答：期间用户在原节点上动手就持续续期，避免 10 秒后被打断。
         /** @type {HTMLElement | null} */
@@ -753,8 +754,43 @@
         const isChatGptHost = () => location.hostname === 'chatgpt.com' || location.hostname.endsWith('.chatgpt.com')
             || testDisplayEnabled;
 
-        const getAssistantTurns = () => findTurns().filter((turn) => turn.matches('[data-chatgpt-search-unit-key$=":assistant"], [data-message-author-role="assistant"]')
-            || Boolean(turn.querySelector('[data-message-author-role="assistant"]')));
+        // 2026-11 新版页面把回合移进 [data-virtualized-turn] 虚拟化列表：离屏回合会被卸载，
+        // data-chatgpt-search-unit-key 退化成 fallback-turn-N（重挂后 N 会变），
+        // 稳定身份要看 data-chatgpt-search-message-ids / data-turn-key；
+        // 角色也从 data-message-author-role 改成 h4[data-conversation-role] 或 key 后缀。
+        /** @param {HTMLElement} turn @returns {'assistant' | 'user' | ''} */
+        const turnRole = (turn) => {
+            const key = turn.getAttribute('data-chatgpt-search-unit-key');
+            if (key) {
+                const suffix = key.slice(key.lastIndexOf(':') + 1);
+                if (suffix === 'assistant' || suffix === 'user') return suffix;
+            }
+            const label = turn.querySelector('h4[data-conversation-role]');
+            const role = label?.getAttribute('data-conversation-role')
+                || turn.getAttribute('data-message-author-role')
+                || turn.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role')
+                || '';
+            return role === 'assistant' || role === 'user' ? role : '';
+        };
+
+        /** @param {HTMLElement} turn @returns {string} */
+        const turnId = (turn) => {
+            const ids = turn.getAttribute('data-chatgpt-search-message-ids');
+            if (ids) {
+                const first = ids.trim().split(/\s+/)[0];
+                if (first) return first;
+            }
+            const keyed = turn.closest('[data-turn-key]');
+            if (keyed instanceof HTMLElement) return keyed.getAttribute('data-turn-key') || '';
+            return turn.getAttribute('data-chatgpt-search-unit-key') || '';
+        };
+
+        /** @param {Element} element @returns {boolean} */
+        const isVirtualizedTurn = (element) => Boolean(element.closest('[data-virtualized-turn]'));
+        // 网页自己的虚拟化会卸载离屏内容；脚本再停车 / 打 content-visibility 只会和它抢高度。
+        const hasVirtualizedTurns = () => Boolean(document.querySelector('[data-virtualized-turn]'));
+
+        const getAssistantTurns = () => findTurns().filter((turn) => turnRole(turn) === 'assistant');
 
         const hasAssistantTurns = () => isChatGptHost() && getAssistantTurns().length > 0;
 
@@ -762,6 +798,17 @@
         // 只读预览，用户点进去时再放出原节点，这样这类回答也能享受静态副本优化。
         const writingBlockSelector = '.ProseMirror[contenteditable="true"][role="textbox"]';
         const readOnlyBlockSelector = '[data-lcl-readonly]';
+
+        // 2026-11 新版页面的身份属性：副本必须全部剥掉，否则同一 message id 在 DOM 里出现两次，
+        // 复制/引用/选中浮层可能定位到副本上（data-selected-text-overlay-target 是 React 内部 id）。
+        const cloneIdentityAttrs = [
+            'data-chatgpt-search-unit-key', 'data-chatgpt-search-message-ids', 'data-content-search-unit-key',
+            'data-message-author-role', 'data-dil-message-id', 'data-dil-source-message-id',
+            'data-chatgpt-selection-message-id', 'data-chatgpt-selection-conversation-id',
+            'data-selected-text-overlay-target', 'data-response-body', 'data-chatgpt-copy-reference',
+            'data-chatgpt-agent-turn-start'
+        ];
+        const cloneIdentityAttrSelector = cloneIdentityAttrs.map((attribute) => '[' + attribute + ']').join(',');
 
         // 含「复制后必然失效」内容的回答不建静态副本：
         // - 输入控件：副本里打不了字；
@@ -775,6 +822,7 @@
             'input:not([type="hidden"]), textarea, select,'
             + ' [contenteditable]:not([contenteditable="false"]):not(.ProseMirror[contenteditable="true"][role="textbox"]),'
             + ' [role="slider"], [role="spinbutton"], [role="scrollbar"], [draggable="true"],'
+            + ' [data-client-defined-widget], [role="tablist"], [role="combobox"],'
             + ' iframe, canvas, video, audio, embed, object'));
 
         // 停车阈值要判断整条会话的规模；全树计数是 16k 级数组，不能每次刷新或定时重算。
@@ -794,6 +842,8 @@
 
         // 最新回答始终使用静态副本；旧回答只在确实会拖慢页面的多回答会话里收起。
         const shouldParkOldAnswers = () => {
+            // 原生虚拟化已经卸载离屏回合：再停车既不会触发，也会和 contain:size 抢高度。
+            if (hasVirtualizedTurns()) return false;
             const assistants = getAssistantTurns();
             if (assistants.length < 2) return false;
             if (getThreadSize() >= 5000) return true;
@@ -816,6 +866,15 @@
                 if (button.getClientRects().length) return true;
             }
             return false;
+        };
+
+        // 2026-11 新版页面给每个回合加了 data-talvt-turn-state；complete 表示已结束。
+        // 只有已知的进行中取值才当成生成中，未知取值不改变原有判断。
+        const generatingTurnStates = new Set(['streaming', 'generating', 'loading', 'pending', 'in_progress']);
+        /** @param {HTMLElement} turn @returns {string} */
+        const turnGenerationState = (turn) => {
+            const host = turn.closest('[data-talvt-turn-state]');
+            return host instanceof HTMLElement ? (host.getAttribute('data-talvt-turn-state') || '') : '';
         };
 
         // 第二重保险：即使所有标记都失效，只要最新回答的文字在最近 3 秒内增长过，就仍视为生成中。
@@ -843,6 +902,7 @@
                 growthAt = performance.now();
             }
             if (isStreamingTurn(latest)) return true;
+            if (generatingTurnStates.has(turnGenerationState(latest))) return true;
             if (isPageGenerating()) {
                 stopButtonSeenAt = performance.now();
                 return true;
@@ -1172,12 +1232,11 @@
             watchContentGrowth(turn);
             const clone = /** @type {HTMLElement} */ (turn.cloneNode(true));
             clone.setAttribute('data-lcl-twin', '1');
-            clone.removeAttribute('data-chatgpt-search-unit-key');
-            clone.removeAttribute('data-message-author-role');
+            for (const element of [clone, ...clone.querySelectorAll(cloneIdentityAttrSelector)]) {
+                for (const attribute of cloneIdentityAttrs) element.removeAttribute(attribute);
+            }
             clone.removeAttribute('data-testid');
-            for (const element of clone.querySelectorAll('[data-chatgpt-search-unit-key], [data-message-author-role], [data-testid^="conversation-turn-"]')) {
-                element.removeAttribute('data-chatgpt-search-unit-key');
-                element.removeAttribute('data-message-author-role');
+            for (const element of clone.querySelectorAll('[data-testid^="conversation-turn-"]')) {
                 element.removeAttribute('data-testid');
             }
             remapCloneIds(clone);
@@ -1207,6 +1266,8 @@
             clone.dataset.lclCvBlocks = String(cvCount);
             const adjustCloneHeight = () => {
                 if (!shieldState || shieldState.clone !== clone || !clone.isConnected) return;
+                // 虚拟化外层是固定高度 + contain:size + overflow:clip，负 margin 补偿会被裁掉。
+                if (isVirtualizedTurn(clone)) return;
                 const cloneHeight = clone.getBoundingClientRect().height;
                 const delta = cloneHeight - turnHeight;
                 if (Math.abs(delta) < 1) return;
@@ -1286,7 +1347,22 @@
                         releasedTurn = shieldState.turn;
                         unshieldTurn();
                         displayCounters.forwardDropped += 1;
+                        return;
                     }
+                    // 2026-11：回答的悬浮工具条与「选中文字」浮层走 React，副本没有 fiber。
+                    // 单击正文（未选字、非双击）时放出原节点，下一次点击/选字就作用在原文上。
+                    if (!shieldState || event.detail > 1) return;
+                    const selection = window.getSelection();
+                    if (selection && !selection.isCollapsed && selection.anchorNode instanceof Node
+                        && clone.contains(selection.anchorNode)) {
+                        return;
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    shieldAllowedAt = Math.max(shieldAllowedAt, performance.now() + 10000);
+                    releasedTurn = shieldState.turn;
+                    unshieldTurn();
+                    displayCounters.forwardRelease += 1;
                     return;
                 }
                 if (target.tagName === 'A') {
@@ -1352,7 +1428,7 @@
                 };
                 requestAnimationFrame(retryTick);
             }, true);
-            shieldState = {turn, clone, signature, turnHeight, displayValue, displayPriority};
+            shieldState = {turn, clone, signature, turnHeight, displayValue, displayPriority, messageId: turnId(turn)};
             // 专注模式期间副本被重建：新副本必须同样是隐藏的。
             // 必须放在 adjustCloneHeight() 之后——先隐藏会让高度量成 0，
             // margin-bottom 会被补偿一整个回答的高度，退出后留下大块空白。
@@ -1378,8 +1454,14 @@
 
         /** @param {HTMLElement} turn */
         const parkTurn = (turn) => {
+            if (isVirtualizedTurn(turn)) return;
             if (parkedTurns.has(turn) || !turn.isConnected || turn === shieldState?.turn || turn.dataset.lclManual === '1' || isStreamingTurn(turn)) return;
-            if (turn.querySelector('[contenteditable="true"]')) return;
+            // 正在写的回答不能收起；含未知编辑器的回答也保守跳过——只有写作块可以安全停车。
+            if (isEditingInside(turn)) return;
+            const editables = turn.querySelectorAll('[contenteditable]:not([contenteditable="false"])');
+            for (const editable of editables) {
+                if (!editable.matches(writingBlockSelector)) return;
+            }
             // 刚被自动恢复的回答先保持可见，避免与恢复逻辑互相拉扯。
             if (Number(turn.dataset.lclUnparkedAt || 0) + 3000 > performance.now()) return;
             const rect = turn.getBoundingClientRect();
@@ -1447,6 +1529,14 @@
             }
             displayCounters.unpark += 1;
             updateUi();
+        };
+
+        // 副本只在底部建立：虚拟化页面里「最后挂载的一条」可能只是旧回答，滚到中部时把
+        // 正在读的回答换成静态副本会丢交互，也会在滚动中反复克隆。
+        const atScrollBottom = () => {
+            const scrollRoot = ensureDisplayScrollRoot();
+            if (!(scrollRoot instanceof Element)) return true;
+            return scrollRoot.scrollTop + scrollRoot.clientHeight >= scrollRoot.scrollHeight - 80;
         };
 
         // 停车规则与 v0.3.3 一致：在底部时，完全离开视口上方的旧回答都停车；
@@ -1605,10 +1695,13 @@
         const adoptShieldToLatest = (latest) => {
             if (!shieldState) return false;
             if (shieldState.turn === latest) return true;
-            if (shieldState.turn.isConnected) return false;
+            const sameMessage = Boolean(shieldState.messageId) && shieldState.messageId === turnId(latest);
+            // 同一消息在虚拟化窗口里重挂：按稳定 ID 直接领养，避免文本长度抖动导致反复克隆。
+            if (shieldState.turn.isConnected && !sameMessage) return false;
             const nextSignature = latest.textContent?.length ?? 0;
-            if (nextSignature !== shieldState.signature) return false;
+            if (!sameMessage && nextSignature !== shieldState.signature) return false;
             shieldState.turn = latest;
+            shieldState.messageId = turnId(latest);
             shieldState.displayValue = latest.style.getPropertyValue('display');
             shieldState.displayPriority = latest.style.getPropertyPriority('display');
             shieldContentLength = nextSignature;
@@ -1634,6 +1727,13 @@
                 if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
                 // 增长窗口结束后若没有新的 DOM 变动，也要补一次刷新，避免副本迟迟不建立。
                 scheduleGrowthRecheck();
+                return;
+            }
+            // 原生虚拟化页面才有「最后挂载的一条未必是真最新」的问题；旧页面保持原行为。
+            if (hasVirtualizedTurns() && !atScrollBottom()) {
+                unshieldTurn();
+                if (shouldParkOldAnswers()) parkFarAnswers(assistants, latest);
+                updateUi();
                 return;
             }
             if (shieldState && shieldState.turn !== latest) {
@@ -1798,7 +1898,9 @@
                 const assistants = getAssistantTurns();
                 const latest = assistants[assistants.length - 1];
                 if (!displayEnabled) throw new Error('轻量显示未进入启用状态');
-                if (latest && !isLatestGenerating(latest) && !hasUncloneableContent(latest)
+                // 虚拟化页面滚在上方时刻意不建副本（最后挂载的未必是真最新），不能算初始化失败。
+                const cloneExpected = !(hasVirtualizedTurns() && !atScrollBottom());
+                if (cloneExpected && latest && !isLatestGenerating(latest) && !hasUncloneableContent(latest)
                     && !isEditingInside(latest) && !document.querySelector('[data-lcl-twin]')) {
                     throw new Error('最新助手回答静态副本未建立');
                 }
@@ -1871,6 +1973,11 @@
                 ensureDisplayScrollRoot();
             }
             if (isLatestGenerating(latest)) {
+                displayHealthMisses = 0;
+                return;
+            }
+            // 虚拟化页面滚在上方时不建副本是预期状态，不能按「副本丢失」去修复。
+            if (hasVirtualizedTurns() && !atScrollBottom()) {
                 displayHealthMisses = 0;
                 return;
             }
